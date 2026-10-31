@@ -1,6 +1,7 @@
 #pragma once
 
 #include "bse_types.h"
+#include "haydock.h"
 
 #include <mpi.h>
 
@@ -101,5 +102,12 @@ void write_velocity_gauge_outputs(
     const DistributedAmplitudes *amplitudes_y,
     const std::string &spin_type,
     const std::string &solution_type);
+
+// Static singlet TDA optical resolvent, with the same normalization and
+// Lorentz energy grid as the eigenstate-based oscillator-strength density.
+void write_haydock_outputs(const InputParameters &options,
+                           const librpa_int::Dataset &dataset,
+                           const FineVelocityMo &velocity,
+                           const TdaApply &apply);
 
 } // namespace libbse

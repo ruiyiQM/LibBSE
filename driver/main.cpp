@@ -53,7 +53,7 @@ namespace
         }
         std::cout << "LibBSE parallel configuration\n"
                   << "  MPI processes: " << mpi_size << '\n'
-                  << "  MPI thread level requested: MPI_THREAD_FUNNELED\n"
+                  << "  MPI thread level requested: MPI_THREAD_MULTIPLE\n"
                   << "  MPI thread level provided: "
                   << mpi_thread_level_name(mpi_thread_level) << '\n'
                   << "  OpenMP max threads per MPI process: "
@@ -69,7 +69,8 @@ namespace
 int main(int argc, char **argv)
 {
     int provided = MPI_THREAD_SINGLE;
-    MPI_Init_thread(&argc, &argv, MPI_THREAD_FUNNELED, &provided);
+    // LibRI/LibComm sends and receives from asynchronous worker threads.
+    MPI_Init_thread(&argc, &argv, MPI_THREAD_MULTIPLE, &provided);
     int rank = 0;
     int mpi_size = 1;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
@@ -84,9 +85,8 @@ int main(int argc, char **argv)
         auto dataset_memory = libbse::watch_memory("dataset", dataset);
         try
         {
-            // check if MPI provides the required thread level (MPI_THREAD_FUNNELED)
-            if (provided < MPI_THREAD_FUNNELED)
-                throw std::runtime_error("MPI does not provide MPI_THREAD_FUNNELED");
+            if (provided < MPI_THREAD_MULTIPLE)
+                throw std::runtime_error("LibRI requires MPI_THREAD_MULTIPLE");
             if (argc != 1)
                 throw std::invalid_argument(
                     "LibBSE takes no command-line parameters; configure ./libbse.in");

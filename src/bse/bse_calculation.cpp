@@ -439,6 +439,19 @@ void run_bse(const InputParameters &options,
         molecular.initialize(coefficients, bare, screened);
     }
 
+    if (options.bse_solver == "haydock")
+    {
+        ScopedTimer timer(global::profiler, "solve_haydock",
+                          "LRI matrix-free Haydock spectrum", dataset->comm_h.comm);
+        auto velocity = prepare_fine_velocity_mo(options, qp, dataset, band_gauge_phases);
+        write_haydock_outputs(options, *dataset, velocity,
+            [&](const std::vector<Complex> &x, std::vector<Complex> &y) {
+                molecular.apply_tda(x, y, "singlet");
+            });
+        molecular.release_interactions();
+        return;
+    }
+
     librpa_int::ArrayDesc descriptor(dataset->blacs_h);
     const int block_size = dimension > 1000 ? 64 : (dimension > 500 ? 32 : 1);
     if (descriptor.init(dimension, dimension, block_size, block_size, 0, 0) != 0)

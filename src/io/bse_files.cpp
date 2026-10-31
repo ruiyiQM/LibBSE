@@ -1,5 +1,6 @@
 #include "utils/memory_views.h"
 #include "bse_files.h"
+#include "bse/uniform_qmesh.h"
 
 #include <librpa_file_reader.hpp>
 
@@ -154,11 +155,48 @@ QuasiparticleBands assign_qp_records(
     result.nk = dataset.mf_band.get_n_kpoints();
     result.nbands = options.nocc + options.nvirt;
     result.energies_ry.resize(static_cast<std::size_t>(result.nk) * result.nbands);
+    std::vector<KPoint> points;
+    for (const auto &k : dataset.kfrac_band_list) points.push_back({k.x,k.y,k.z});
+    if (points.size() != static_cast<std::size_t>(result.nk))
+        throw std::runtime_error("BSE k-grid and mean-field dimensions differ");
+    const Cell shape = infer_uniform_qmesh(points);
+    bool indexed = shape[0] > 0;
+    for (int axis = 0; axis < 3; ++axis)
+        if (shape[axis] > 1 && (2.0 * tolerance + 2.e-10) * shape[axis] >= 1.0)
+            indexed = false; // Retain ambiguity detection for unresolved QP coordinates.
+    for (const auto &k : points)
+        for (const double coordinate : k)
+            indexed = indexed && std::abs(coordinate) <= 1.0;
+    const KPoint origin = points.empty() ? KPoint{} : points.front();
+    const auto grid_key = [&](const KPoint &k) {
+        Cell key{};
+        for (int axis = 0; axis < 3; ++axis)
+        {
+            auto index = std::llround((k[axis] - origin[axis]) * shape[axis]) % shape[axis];
+            if (index < 0) index += shape[axis];
+            key[axis] = static_cast<int>(index);
+        }
+        return key;
+    };
+    std::map<Cell, int> sites;
+    if (indexed)
+        for (int k = 0; k < result.nk; ++k) sites.emplace(grid_key(points[k]), k);
     std::vector<bool> assigned(static_cast<std::size_t>(result.nk), false);
     for (const QpRecord &record : records)
     {
-        const int ik = match_kpoint(record.k, dataset.kfrac_band_list,
-                                    tolerance, record.source);
+        bool use_index = indexed;
+        for (const double coordinate : record.k)
+            use_index = use_index && std::abs(coordinate) <= 1.0;
+        int ik;
+        if (use_index)
+        {
+            ik = sites.at(grid_key(record.k));
+            for (int axis = 0; axis < 3; ++axis)
+                if (periodic_coordinate_distance(record.k[axis], points[ik][axis]) > tolerance)
+                    throw std::runtime_error("QP k-point is absent from the BSE grid: " + record.source);
+        }
+        else
+            ik = match_kpoint(record.k, dataset.kfrac_band_list, tolerance, record.source);
         if (assigned[static_cast<std::size_t>(ik)])
             throw std::runtime_error("duplicate QP data for BSE k-point "
                                      + std::to_string(ik + 1));

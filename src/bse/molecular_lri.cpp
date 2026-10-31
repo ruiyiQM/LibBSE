@@ -203,7 +203,7 @@ MolecularLri::MolecularLri(librpa_int::Dataset &dataset,
     // Correct W(q) after its Fourier transform and before the RI contraction.
     if (options_.bse_w_boundary_average)
         lr_.lrik.screened_q_correction = WBoundaryCorrection{this};
-    build_exact_q_map();
+    if (options_.bse_solver != "haydock") build_exact_q_map();
 }
 
 // Add [averaged phase - original phase] * W_ij(R) for boundary cells.
@@ -732,6 +732,88 @@ void MolecularLri::add_screened_b(std::vector<Complex> &matrix,
     auto blocks_memory = watch_memory("LibRI.blocks", blocks);
     transform_k_2dlocal(
         matrix, blocks, descriptor, nk_, pair_dimension_, coefficient);
+}
+
+void MolecularLri::apply_tda_streamed(const std::vector<Complex> &x,
+                              std::vector<Complex> &y,
+                              const std::string &spin_type)
+{
+    const int dimension = nk_ * pair_dimension_;
+    if (x.size() != static_cast<std::size_t>(dimension))
+        throw std::invalid_argument("invalid LRI TDA input-vector dimension");
+    for (const auto value : x)
+        if (!std::isfinite(std::abs(value)))
+            throw std::invalid_argument("nonfinite LRI TDA input vector");
+    const auto weights = interaction_coefficients(spin_type);
+    const auto shape = infer_uniform_qmesh(lr_.kindex_map);
+    const int limit = std::max(1, options_.bse_ri_batch_blocks);
+    std::vector<Complex> local(dimension, Complex{});
+    auto local_memory = watch_memory("LibRI.apply_local", local);
+    const double normalization = PARAM.constants.ha_to_ry / nk_;
+    const auto contract = [&](const KMatrixMap &blocks, double coefficient)
+    {
+        for (const auto &[k1, columns] : blocks)
+            for (const auto &[k2, block] : columns)
+            {
+                if (block.get_shape_all() != static_cast<std::size_t>(pair_dimension_) * pair_dimension_)
+                    throw std::runtime_error("invalid LRI TDA block dimension");
+                for (int j = 0; j < pair_dimension_; ++j)
+                    for (int i = 0; i < pair_dimension_; ++i)
+                        local[k1 * pair_dimension_ + i]
+                            += coefficient * normalization
+                               * block.ptr()[i + static_cast<std::size_t>(j) * pair_dimension_]
+                               * x[k2 * pair_dimension_ + j];
+            }
+    };
+    // Keep this k-pair contraction independent of the AO/R implementation.
+    for (const int k1 : lr_.k1_indices)
+        for (std::size_t begin = 0; begin < lr_.k2_indices.size(); begin += limit)
+        {
+            const auto end = std::min(begin + limit, lr_.k2_indices.size());
+            const std::vector<int> columns(lr_.k2_indices.begin() + begin,
+                                           lr_.k2_indices.begin() + end);
+            if (weights.hartree != 0.0)
+            {
+                auto blocks = lr_.lrik.cal_cvc_mo_k_hartree_onthefly(
+                    lr_.Csk_ao_mo, lr_.map_psi, {k1}, columns,
+                    lr_.list_I, lr_.list_J, {"O", "V", "O", "V"},
+                    options_.nocc, options_.nvirt, "Vs_", true);
+                contract(blocks, weights.hartree);
+            }
+            if (weights.screened != 0.0)
+            {
+                std::map<KPoint, std::vector<std::pair<int, int>>> pairs;
+                for (const int k2 : columns)
+                {
+                    KPoint transfer{};
+                    for (int axis = 0; axis < 3; ++axis)
+                    {
+                        transfer[axis] = lr_.kindex_map[k2][axis] - lr_.kindex_map[k1][axis];
+                        transfer[axis] -= std::floor(transfer[axis]);
+                    }
+                    pairs[canonical_uniform_q(transfer, shape)].emplace_back(k1, k2);
+                }
+                std::vector<KPoint> transfers;
+                for (const auto &entry : pairs) transfers.push_back(entry.first);
+                auto blocks = lr_.lrik.cal_cvc_mo_k_onthefly(
+                    lr_.Csk_ao_mo, lr_.map_psi, {k1}, columns,
+                    lr_.list_I, lr_.list_J, {"O", "O", "V", "V"},
+                    options_.nocc, options_.nvirt, "Ws_", true, transfers, pairs);
+                contract(blocks, weights.screened);
+            }
+        }
+    y.resize(dimension);
+    MPI_Allreduce(local.data(), y.data(), dimension, MPI_C_DOUBLE_COMPLEX,
+                  MPI_SUM, dataset_.comm_h.comm);
+    for (int k = 0; k < nk_; ++k)
+        for (int i = 0; i < options_.nocc; ++i)
+            for (int a = 0; a < options_.nvirt; ++a)
+            {
+                const int pair = k * pair_dimension_ + i * options_.nvirt + a;
+                const auto offset = static_cast<std::size_t>(k) * qp_.nbands;
+                y[pair] += (qp_.energies_ry[offset + options_.nocc + a]
+                            - qp_.energies_ry[offset + i]) * x[pair];
+            }
 }
 
 void MolecularLri::replace_screened(TensorMap<Complex> &screened)

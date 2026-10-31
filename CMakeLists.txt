@@ -44,7 +44,8 @@ if(NOT EXISTS "${LIBRPA_SOURCE_ROOT}/CMakeLists.txt")
     "LIBRPA_INCLUDE_DIR must belong to a LibRPA source checkout: ${LIBRPA_INCLUDE_DIR}")
 endif()
 
-set(LIBRPA_ENABLE_DRIVER OFF CACHE BOOL "" FORCE)
+option(LIBBSE_BUILD_LIBRPA_DRIVER "Build the standalone LibRPA GW driver" OFF)
+set(LIBRPA_ENABLE_DRIVER ${LIBBSE_BUILD_LIBRPA_DRIVER} CACHE BOOL "" FORCE)
 set(LIBRPA_ENABLE_TEST OFF CACHE BOOL "" FORCE)
 set(LIBRPA_ENABLE_CPP_TEST OFF CACHE BOOL "" FORCE)
 set(LIBRPA_ENABLE_FORTRAN_BIND OFF CACHE BOOL "" FORCE)
@@ -59,8 +60,12 @@ add_library(libbse_core
   src/bse/bse_calculation.cpp
   src/bse/distributed_amplitudes.cpp
   src/bse/elpa_solver.cpp
+  src/bse/fft_convolution.cpp
+  src/bse/haydock.cpp
   src/bse/matrix_checks.cpp
   src/bse/molecular_lri.cpp
+  src/bse/molecular_lri_apply.cpp
+  src/bse/molecular_lri_fft.cpp
   src/bse/spectrum.cpp
   src/interface/librpa_api.cpp
   src/io/aims_screened.cpp
@@ -83,6 +88,19 @@ target_include_directories(libbse_core
 find_package(OpenMP REQUIRED COMPONENTS CXX)
 find_package(MPI REQUIRED COMPONENTS CXX)
 target_link_libraries(libbse_core PUBLIC librpa_file_reader OpenMP::OpenMP_CXX)
+
+option(LIBBSE_ENABLE_FFTW "Enable the FFT LRI matrix action" OFF)
+if(LIBBSE_ENABLE_FFTW)
+  set(FFTW3_ROOT "" CACHE PATH "Optional FFTW installation prefix")
+  find_path(FFTW3_INCLUDE_DIR fftw3.h HINTS "${FFTW3_ROOT}/include")
+  find_library(FFTW3_LIBRARY fftw3 HINTS "${FFTW3_ROOT}/lib")
+  if(NOT FFTW3_INCLUDE_DIR OR NOT FFTW3_LIBRARY)
+    message(FATAL_ERROR "FFTW3 not found; set FFTW3_ROOT or disable LIBBSE_ENABLE_FFTW")
+  endif()
+  target_include_directories(libbse_core PRIVATE "${FFTW3_INCLUDE_DIR}")
+  target_link_libraries(libbse_core PRIVATE "${FFTW3_LIBRARY}")
+  target_compile_definitions(libbse_core PRIVATE LIBBSE_HAVE_FFTW)
+endif()
 
 add_executable(LibBSE driver/main.cpp)
 target_link_libraries(LibBSE PRIVATE libbse_core)

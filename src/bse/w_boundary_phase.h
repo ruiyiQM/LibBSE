@@ -5,9 +5,32 @@
 #include <array>
 #include <cmath>
 #include <complex>
+#include <utility>
+#include <vector>
 
 namespace libbse
 {
+
+// The real-space image representation of the same endpoint correction below.
+inline std::vector<std::pair<std::array<int, 3>, double>> w_boundary_images(
+    const std::array<int, 3> &cell, const std::array<int, 3> &period, bool average)
+{
+    std::vector<std::pair<std::array<int, 3>, double>> images{{cell, 1.0}};
+    if (average)
+        for (int axis = 0; axis < 3; ++axis)
+            if (period[axis] % 2 == 0 && cell[axis] == -period[axis] / 2)
+            {
+                const auto count = images.size();
+                for (std::size_t j = 0; j < count; ++j)
+                {
+                    images[j].second *= 0.5;
+                    auto opposite = images[j];
+                    opposite.first[axis] *= -1;
+                    images.push_back(opposite);
+                }
+            }
+    return images;
+}
 
 // Return the averaged boundary phase minus the original single-image phase.
 // q is fractional, cell is integer, and period is the coarse BvK mesh size.

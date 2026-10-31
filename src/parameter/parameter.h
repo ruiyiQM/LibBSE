@@ -52,6 +52,8 @@ struct InputParameters
     int nocc = 4;
     int nvirt = 4;
     std::string bse_solver = "elpa";
+    int bse_haydock_iterations = 200;
+    std::string bse_haydock_apply = "realspace";
     std::vector<std::string> bse_spin_types{"singlet", "triplet"};
     int bse_continue = 0;
     std::string bse_tda = "both";

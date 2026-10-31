@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Convert FHI-aims mommat.h5 to LibRPA velocity_matrix binary v1."""
+"""Convert FHI-aims HDF5 or native KS momentum blocks to velocity_matrix v1."""
 
 from __future__ import annotations
 
@@ -51,6 +51,8 @@ def _read_momentum(
 ) -> tuple[np.ndarray, int, int]:
     nk, _nspin, nbands, _nao = dimensions
     hdf5_file = input_dir / "mommat.h5"
+    if not hdf5_file.exists():
+        return _read_native_momentum(input_dir, dimensions)
     with h5py.File(hdf5_file, "r") as handle:
         window = np.asarray(handle["Energy_window"]).reshape(-1)
         if window.size != 2:
@@ -93,6 +95,41 @@ def _read_momentum(
     for cell, ik in enumerate(indices):
         ordered[int(ik)] = momentum.reshape(nk, npairs, 6)[cell]
     return ordered, state_min, state_max
+
+
+def _read_native_momentum(
+    input_dir: Path, dimensions: tuple[int, int, int, int]
+) -> tuple[np.ndarray, int, int]:
+    nk, nspin, nbands, _nao = dimensions
+    ordered = None
+    window = None
+    for ik in range(nk):
+        filename = input_dir / f"mommat_ks_kpt_{ik + 1:06d}.dat"
+        with filename.open("rb") as source:
+            header = source.read(24)
+            if len(header) != 24:
+                raise ValueError(f"truncated momentum header: {filename}")
+            index, first, last, npairs, spins, directions = struct.unpack("<6i", header)
+            if (index != ik + 1 or spins != nspin or directions != 3
+                    or not 1 <= first <= last <= nbands
+                    or npairs != (last - first + 1) * (last - first + 2) // 2):
+                raise ValueError(f"invalid native momentum header: {filename}")
+            if window is None:
+                window = (first, last)
+                ordered = np.empty((nk, npairs, 6), dtype=np.float64)
+            if window != (first, last):
+                raise ValueError(f"inconsistent native momentum band window: {filename}")
+            # Native unformatted stream: complex*16 (pair, spin, Cartesian direction).
+            values = np.frombuffer(source.read(), dtype="<c16")
+            if values.size != npairs * nspin * 3 or not np.isfinite(values).all():
+                raise ValueError(f"invalid native momentum payload: {filename}")
+            values = values.reshape(3, npairs).T
+            # Native calc_moment_w0 packs <j|grad|i>, while HDF5
+            # calc_moment_p0 packs <i|grad|j>; grad is anti-Hermitian.
+            values = -values.conjugate()
+            ordered[ik, :, 0::2] = values.real
+            ordered[ik, :, 1::2] = values.imag
+    return ordered, window[0], window[1]
 
 
 def _velocity_blocks(
@@ -185,7 +222,7 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, KeyError, ValueError) as error:
         print(f"aims_mommat_to_velocity.py: {error}", file=sys.stderr)
         return 1
-    print(f"Converted {arguments.input_dir / 'mommat.h5'} -> {output}")
+    print(f"Converted momentum data in {arguments.input_dir} -> {output}")
     return 0
 
 

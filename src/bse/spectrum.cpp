@@ -1099,4 +1099,64 @@ void write_tda_block_cyclic_outputs(
                                      nstates,false,spin,"tda",visit);
 }
 
+void write_haydock_outputs(const InputParameters &options,
+                           const librpa_int::Dataset &dataset,
+                           const FineVelocityMo &velocity,
+                           const TdaApply &apply)
+{
+    validate_velocity_mo(options, velocity);
+    const int dimension = velocity.nk * options.nocc * options.nvirt;
+    int rank = 0;
+    MPI_Comm_rank(dataset.comm_h.comm, &rank);
+    const double raw_points = (options.spectrum_energy_max_ev - options.spectrum_energy_min_ev)
+                              / options.spectrum_energy_step_ev;
+    if (raw_points < 0.0 || raw_points > 1.e7)
+        throw std::invalid_argument("invalid Haydock spectrum grid");
+    std::vector<SpectrumPoint> spectrum(static_cast<std::size_t>(std::floor(raw_points + 1.e-12)) + 1);
+    for (std::size_t j = 0; j < spectrum.size(); ++j)
+        spectrum[j].energy_ev = options.spectrum_energy_min_ev + j * options.spectrum_energy_step_ev;
+    std::ofstream recurrence;
+    if (rank == 0)
+    {
+        recurrence.open(fs::path(options.output_dir) / "haydock_singlet_tda.dat");
+        if (!recurrence) throw std::runtime_error("cannot write Haydock recurrence");
+        recurrence << "# axis step alpha_Ry beta_next_Ry seed_norm_squared\n"
+                   << std::scientific << std::setprecision(16);
+    }
+    for (int axis = 0; axis < 3; ++axis)
+    {
+        std::vector<Complex> seed(dimension, Complex{});
+        auto seed_memory = watch_memory("haydock.seed", seed);
+        for (int pair = 0; pair < velocity.local_pairs; ++pair)
+            seed[velocity.first_pair + pair] = std::conj(
+                velocity.values[static_cast<std::size_t>(axis) * velocity.local_pairs + pair]
+                / velocity.gaps_ha[pair]);
+        MPI_Allreduce(MPI_IN_PLACE, seed.data(), dimension, MPI_C_DOUBLE_COMPLEX,
+                      MPI_SUM, dataset.comm_h.comm);
+        const auto chain = haydock_recursion(apply, seed, options.bse_haydock_iterations);
+        for (auto &point : spectrum)
+        {
+            const Complex z = Complex(point.energy_ev, options.spectrum_broadening_ev)
+                              / PARAM.constants.ry_to_ev;
+            // f_S = 4 Omega_Ry |<seed|S>|^2, including sqrt(2) in d_S.
+            // Keeping complex z in z*G weights each pole by its excitation
+            // energy before broadening, exactly as the ELPA spectrum does.
+            point.directional[axis] = -4.0 / (PARAM.constants.pi * PARAM.constants.ry_to_ev)
+                                      * std::imag(z * haydock_resolvent(chain, z));
+            point.isotropic += point.directional[axis] / 3.0;
+        }
+        if (rank == 0)
+        {
+            std::cout << "Haydock axis " << axis << ": " << chain.alpha.size()
+                      << " steps; invariant subspace exhausted: " << chain.terminated << '\n';
+            for (std::size_t j = 0; j < chain.alpha.size(); ++j)
+                recurrence << axis << ' ' << j << ' ' << chain.alpha[j] << ' '
+                           << chain.beta[j] << ' ' << chain.seed_norm_squared << '\n';
+        }
+    }
+    if (rank == 0)
+        write_spectrum(fs::path(options.output_dir) / "spectrum_singlet_tda.dat",
+                       spectrum, options.spectrum_broadening_ev);
+}
+
 } // namespace libbse

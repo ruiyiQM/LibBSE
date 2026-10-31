@@ -3,6 +3,7 @@
 
 #include "bse_types.h"
 #include "molecular_lri_comm.h"
+#include "fft_convolution.h"
 
 #include <librpa_file_reader.hpp>
 
@@ -53,12 +54,27 @@ public:
                         const librpa_int::ArrayDesc &descriptor,
                         double coefficient);
 
+    // TDA action: AO/R O(Nk*NR), or FFT O(Nk log Nk), for fixed cell bases.
+    void apply_tda(const std::vector<Complex> &x, std::vector<Complex> &y,
+                   const std::string &spin_type);
+    void apply_tda_real_space(const std::vector<Complex> &x, std::vector<Complex> &y,
+                              const std::string &spin_type);
+    void apply_tda_fft(const std::vector<Complex> &x, std::vector<Complex> &y,
+                       const std::string &spin_type);
+    // Independent k-pair reference for validation and timing, O(Nk^2).
+    void apply_tda_streamed(const std::vector<Complex> &x, std::vector<Complex> &y,
+                            const std::string &spin_type);
+
     // Replace only W after the static solve; retain the already transformed
     // RI coefficients and fine-grid wave functions for the effective kernel.
     void replace_screened(TensorMap<Complex> &screened);
     void release_interactions();
 
 private:
+    void apply_tda_impl(const std::vector<Complex> &x, std::vector<Complex> &y,
+                        const std::string &spin_type, bool use_fft);
+    void add_screened_fft(const std::vector<Complex> &x,
+                           std::vector<Complex> &local, double factor);
     void add_batched(std::vector<Complex> &matrix,
                      const librpa_int::ArrayDesc &descriptor,
                      double coefficient, bool hartree, bool is_a);
@@ -90,6 +106,8 @@ private:
     RI::LR<int, int, 3, Complex> lr_;
     std::ofstream log_;
     std::unique_ptr<MemoryWatch> memory_;
+    std::unique_ptr<UniformFftGrid> fft_grid_;
+    std::map<int, std::unique_ptr<FftBatch>> fft_plans_;
 };
 
 } // namespace libbse

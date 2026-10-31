@@ -217,6 +217,10 @@ void Parameter::parse(const std::string &contents, const fs::path &base_director
     if (auto value = take("nocc"); !value.empty()) inp.nocc = parse_integer("nocc", value);
     if (auto value = take("nvirt"); !value.empty()) inp.nvirt = parse_integer("nvirt", value);
     if (auto value = take("bse_solver"); !value.empty()) inp.bse_solver = lower(value);
+    if (auto value = take("bse_haydock_iterations"); !value.empty())
+        inp.bse_haydock_iterations = parse_integer("bse_haydock_iterations", value);
+    if (auto value = take("bse_haydock_apply"); !value.empty())
+        inp.bse_haydock_apply = lower(value);
     if (auto value = take("bse_spin_types"); !value.empty())
         inp.bse_spin_types = parse_string_list(value);
     if (auto value = take("bse_continue"); !value.empty())
@@ -301,8 +305,20 @@ void Parameter::validate_and_resolve(const fs::path &base_directory)
     if (inp.nocc <= 0 || inp.nvirt <= 0
         || inp.bse_nstates == 0 || inp.bse_nstates < -1)
         throw std::invalid_argument("invalid nocc, nvirt, or bse_nstates");
-    if (inp.bse_solver != "elpa" && inp.bse_solver != "spectrum")
-        throw std::invalid_argument("bse_solver must be elpa or spectrum");
+    if (inp.bse_solver != "elpa" && inp.bse_solver != "spectrum"
+        && inp.bse_solver != "haydock")
+        throw std::invalid_argument("bse_solver must be elpa, spectrum or haydock");
+    if (inp.bse_haydock_iterations <= 0)
+        throw std::invalid_argument("bse_haydock_iterations must be positive");
+    if (inp.bse_haydock_apply != "realspace" && inp.bse_haydock_apply != "fft")
+        throw std::invalid_argument("bse_haydock_apply must be realspace or fft");
+    if (inp.bse_haydock_apply == "fft" && inp.bse_solver != "haydock")
+        throw std::invalid_argument("bse_haydock_apply fft requires bse_solver haydock");
+    if (inp.bse_solver == "haydock"
+        && (inp.bse_tda != "tda" || inp.bse_spin_types != std::vector<std::string>{"singlet"}
+            || inp.bse_plasma_energy_ev > 0.0 || inp.bse_nstates != -1
+            || inp.out_bse_eigenvectors || inp.spectrum_energy_max_ev < 0.0))
+        throw std::invalid_argument("Haydock requires static singlet TDA, bse_nstates -1, out_bse_eigenvectors false and an explicit spectrum_energy_max_ev");
     if (inp.bse_tda != "tda" && inp.bse_tda != "full" && inp.bse_tda != "both")
         throw std::invalid_argument("bse_tda must be tda, full, or both");
     if (inp.bse_spin_types.empty())
@@ -387,6 +403,8 @@ void Parameter::print(std::ostream &output) const
            << "  nocc: " << inp.nocc << '\n'
            << "  nvirt: " << inp.nvirt << '\n'
            << "  bse_solver: " << inp.bse_solver << '\n'
+           << "  bse_haydock_iterations: " << inp.bse_haydock_iterations << '\n'
+           << "  bse_haydock_apply: " << inp.bse_haydock_apply << '\n'
            << "  bse_spin_types:";
     for (const std::string &spin_type : inp.bse_spin_types)
         output << ' ' << spin_type;
