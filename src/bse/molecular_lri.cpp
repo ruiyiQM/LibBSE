@@ -2,6 +2,7 @@
 #include "utils/memory_views.h"
 #include "utils/profiler.h"
 #include "molecular_lri.h"
+#include "tr_virtual.h"
 #include "uniform_qmesh.h"
 
 #include <RI/global/Array_Operator.h>
@@ -170,6 +171,25 @@ std::vector<Complex> apply_wavefunction_gauge(
     return phases;
 }
 
+bool MolecularLri::uses_distributed_k() const
+{
+    int ranks = 1;
+    MPI_Comm_size(dataset_.comm_h.comm, &ranks);
+    const auto pairs = dataset_.atoms.size() * dataset_.atoms.size();
+    return options_.bse_solver == "haydock"
+        && options_.bse_haydock_apply == "realspace_kmpi"
+        && pairs > 0 && static_cast<std::size_t>(ranks) > pairs
+        && (static_cast<std::size_t>(ranks) - 1) / pairs < static_cast<std::size_t>(nk_);
+}
+
+void MolecularLri::require_cartesian_k_pairs() const
+{
+    if (uses_distributed_k())
+        throw std::logic_error(
+            "realspace_kmpi owns partial k slices; construct a separate realspace or fft "
+            "MolecularLri object for dense, streamed or FFT reference actions");
+}
+
 MolecularLri::MolecularLri(librpa_int::Dataset &dataset,
                            const InputParameters &options,
                            const QuasiparticleBands &qp)
@@ -191,11 +211,46 @@ MolecularLri::MolecularLri(librpa_int::Dataset &dataset,
         kpoints[static_cast<std::size_t>(ik)] = {k.x, k.y, k.z};
     }
     lr_.init(std::move(kpoints), options_.nocc, options_.nvirt);
-    lr_.set_parallel(dataset_.comm_h.comm, dataset_.atoms.size(),
-                     static_cast<std::size_t>(nk_), dataset_.pbc.period_array);
+    int mpi_size = 1;
+    MPI_Comm_size(dataset_.comm_h.comm, &mpi_size);
+    const auto nat = dataset_.atoms.size();
+    const bool pair_k = uses_distributed_k();
+    const bool atom_first = options_.bse_solver == "haydock"
+        && (options_.bse_haydock_apply == "realspace"
+            || options_.bse_haydock_apply == "realspace_kmpi") && mpi_size > 1
+        && static_cast<std::size_t>(mpi_size) <= nat * nat;
+    // One k task makes the existing splitter distribute atom pairs first.
+    lr_.set_parallel(dataset_.comm_h.comm, nat,
+                     (atom_first || pair_k) ? 1 : static_cast<std::size_t>(nk_), dataset_.pbc.period_array);
+    if (pair_k)
+    {
+        const int pairs = static_cast<int>(nat * nat), pair = rank % pairs;
+        const int owner = rank / pairs, owners = 1 + (mpi_size - 1 - pair) / pairs;
+        lr_.list_I = {pair / static_cast<int>(nat)};
+        lr_.list_J = {pair % static_cast<int>(nat)};
+        lr_.list_IJ = lr_.list_I;
+        if (lr_.list_I != lr_.list_J) lr_.list_IJ.push_back(lr_.list_J.front());
+        std::sort(lr_.list_IJ.begin(), lr_.list_IJ.end());
+        const auto partners = tr_partners(lr_.kindex_map);
+        lr_.k_indices = tr_owned_k(partners, owner, owners);
+        tr_partner_slots_ = tr_partner_slots(partners, lr_.k_indices);
+        lr_.k1_indices = lr_.k2_indices = lr_.k_indices;
+    }
+    else if (atom_first && !lr_.k1_indices.empty() && !lr_.k2_indices.empty())
+    {
+        lr_.k1_indices.resize(nk_);
+        std::iota(lr_.k1_indices.begin(), lr_.k1_indices.end(), 0);
+        lr_.k2_indices = lr_.k1_indices;
+        lr_.k_indices = lr_.k1_indices;
+    }
+    log_ << "LRI_R_PARTITION mode=" << (pair_k ? "atom_k" : (atom_first ? "atom_pairs" : "cartesian_k"))
+         << " rank=" << rank << " atoms_i=" << lr_.list_I.size()
+         << " atoms_j=" << lr_.list_J.size() << " k1=" << lr_.k1_indices.size()
+         << " k2=" << lr_.k2_indices.size() << std::endl;
     memory_ = std::make_unique<MemoryWatch>([this](MemoryVisitor &v) {
         visit_memory(v, w_boundary_tensors_, "LibRI.w_boundary_tensors");
         visit_memory(v, lr_.map_psi, "LibRI.wavefunctions");
+        visit_memory(v, tr_partner_slots_, "LibRI.tr_partner_slots");
         visit_memory(v, lr_.Csk_ao_mo, "LibRI.Csk_ao_mo");
         for (const auto &entry : lr_.lrik.data_pool)
             visit_memory(v, entry.second.Ds_ab, "LibRI." + entry.first);
@@ -670,6 +725,7 @@ void MolecularLri::add_hartree_a(std::vector<Complex> &matrix,
                                  const librpa_int::ArrayDesc &descriptor,
                                  double coefficient)
 {
+    require_cartesian_k_pairs();
     if (options_.bse_memory_optimized && options_.bse_ri_batch_blocks > 0)
     {
         add_batched(matrix, descriptor, coefficient, true, true);
@@ -687,6 +743,7 @@ void MolecularLri::add_hartree_b(std::vector<Complex> &matrix,
                                  const librpa_int::ArrayDesc &descriptor,
                                  double coefficient)
 {
+    require_cartesian_k_pairs();
     if (options_.bse_memory_optimized && options_.bse_ri_batch_blocks > 0)
     {
         add_batched(matrix, descriptor, coefficient, true, false);
@@ -704,6 +761,7 @@ void MolecularLri::add_screened_a(std::vector<Complex> &matrix,
                                   const librpa_int::ArrayDesc &descriptor,
                                   double coefficient)
 {
+    require_cartesian_k_pairs();
     if (options_.bse_memory_optimized && options_.bse_ri_batch_blocks > 0)
     {
         add_batched(matrix, descriptor, coefficient, false, true);
@@ -721,6 +779,7 @@ void MolecularLri::add_screened_b(std::vector<Complex> &matrix,
                                   const librpa_int::ArrayDesc &descriptor,
                                   double coefficient)
 {
+    require_cartesian_k_pairs();
     if (options_.bse_memory_optimized && options_.bse_ri_batch_blocks > 0)
     {
         add_batched(matrix, descriptor, coefficient, false, false);
@@ -738,6 +797,7 @@ void MolecularLri::apply_tda_streamed(const std::vector<Complex> &x,
                               std::vector<Complex> &y,
                               const std::string &spin_type)
 {
+    require_cartesian_k_pairs();
     const int dimension = nk_ * pair_dimension_;
     if (x.size() != static_cast<std::size_t>(dimension))
         throw std::invalid_argument("invalid LRI TDA input-vector dimension");

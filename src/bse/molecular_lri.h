@@ -71,6 +71,8 @@ public:
     void release_interactions();
 
 private:
+    bool uses_distributed_k() const;
+    void require_cartesian_k_pairs() const;
     void apply_tda_impl(const std::vector<Complex> &x, std::vector<Complex> &y,
                         const std::string &spin_type, bool use_fft);
     void add_screened_fft(const std::vector<Complex> &x,
@@ -104,6 +106,7 @@ private:
     int nk_ = 0;
     int pair_dimension_ = 0;
     RI::LR<int, int, 3, Complex> lr_;
+    std::vector<int> tr_partner_slots_;
     std::ofstream log_;
     std::unique_ptr<MemoryWatch> memory_;
     std::unique_ptr<UniformFftGrid> fft_grid_;

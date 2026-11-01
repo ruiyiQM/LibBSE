@@ -441,9 +441,18 @@ void run_bse(const InputParameters &options,
 
     if (options.bse_solver == "haydock")
     {
+        FineVelocityMo velocity;
+        auto velocity_memory = watch_memory("velocity", velocity);
+        {
+            ScopedTimer timer(global::profiler, "prepare_velocity_mo",
+                              "Prepare fine-grid velocity_mo", dataset->comm_h.comm);
+            velocity = prepare_fine_velocity_mo(options, qp, dataset, band_gauge_phases);
+        }
+        // LibRI owns its selected-band copies; raw orbitals are no longer needed.
+        dataset->mf.get_eigenvectors().clear();
+        dataset->mf_band.get_eigenvectors().clear();
         ScopedTimer timer(global::profiler, "solve_haydock",
                           "LRI matrix-free Haydock spectrum", dataset->comm_h.comm);
-        auto velocity = prepare_fine_velocity_mo(options, qp, dataset, band_gauge_phases);
         write_haydock_outputs(options, *dataset, velocity,
             [&](const std::vector<Complex> &x, std::vector<Complex> &y) {
                 molecular.apply_tda(x, y, "singlet");

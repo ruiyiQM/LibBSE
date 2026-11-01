@@ -116,19 +116,29 @@ void write_oscillator_strengths(
 
 void write_spectrum(const fs::path &file,
                     const std::vector<SpectrumPoint> &spectrum,
-                    double broadening_ev)
+                    double broadening_ev,
+                    const std::string &polarizations = "xyz")
 {
     std::ofstream output(file);
     if (!output) throw std::runtime_error("cannot write " + file.string());
     output << "# Lorentz-broadened oscillator-strength density (eV^-1)\n"
            << "# half_width_eV " << std::setprecision(12)
            << broadening_ev << '\n'
-           << "# energy_eV S_x S_y S_z S_isotropic\n"
-           << std::scientific << std::setprecision(12);
+           << "# energy_eV";
+    for (int axis = 0; axis < 3; ++axis)
+        if (polarizations.find("xyz"[axis]) != std::string::npos)
+            output << " S_" << "xyz"[axis];
+    if (polarizations.size() == 3) output << " S_isotropic";
+    output << '\n' << std::scientific << std::setprecision(12);
     for (const auto &point : spectrum)
-        output << point.energy_ev << ' ' << point.directional[0] << ' '
-               << point.directional[1] << ' ' << point.directional[2]
-               << ' ' << point.isotropic << '\n';
+    {
+        output << point.energy_ev;
+        for (int axis = 0; axis < 3; ++axis)
+            if (polarizations.find("xyz"[axis]) != std::string::npos)
+                output << ' ' << point.directional[axis];
+        if (polarizations.size() == 3) output << ' ' << point.isotropic;
+        output << '\n';
+    }
 }
 
 void validate_velocity_mo(const InputParameters &options,
@@ -604,15 +614,26 @@ FineVelocityMo prepare_fine_velocity_mo(
     auto local_sources_memory = libbse::watch_memory("spectrum.local_sources", local_sources);
     for (int ik = 0; ik < fine_nk; ++ik)
         if (dataset->mf_band.find_wfc(0, 0, ik) != nullptr)
-            local_sources[ik] = rank;
+        {
+            // Balance replicated k points while selecting only an available wavefunction.
+            const int preferred = ik % mpi_size;
+            local_sources[ik] = rank >= preferred ? rank - preferred
+                                                : mpi_size - (preferred - rank);
+        }
     std::vector<int> sources(static_cast<std::size_t>(fine_nk), mpi_size);
     auto sources_memory = libbse::watch_memory("spectrum.sources", sources);
     MPI_Allreduce(local_sources.data(), sources.data(), fine_nk, MPI_INT,
                   MPI_MIN, dataset->comm_h.comm);
     for (int ik = 0; ik < fine_nk; ++ik)
+    {
         if (sources[ik] == mpi_size)
             throw std::runtime_error(
                 "fine-grid KS wavefunction is absent on every MPI rank");
+        const int preferred = ik % mpi_size;
+        sources[ik] = sources[ik] < mpi_size - preferred
+                          ? sources[ik] + preferred
+                          : sources[ik] - (mpi_size - preferred);
+    }
 
     std::vector<int> send_pair_counts(static_cast<std::size_t>(mpi_size), 0);
     auto send_pair_counts_memory = libbse::watch_memory("spectrum.send_pair_counts", send_pair_counts);
@@ -658,6 +679,13 @@ FineVelocityMo prepare_fine_velocity_mo(
     auto send_values_memory = libbse::watch_memory("spectrum.send_values", send_values);
     std::vector<int> send_cursor = send_pair_offsets;
     auto send_cursor_memory = libbse::watch_memory("spectrum.send_cursor", send_cursor);
+    const int atom_count = static_cast<int>(dataset->atoms.size());
+    std::vector<int> ao_atoms(static_cast<std::size_t>(nao));
+    for (int row = 0; row < nao; ++row)
+        ao_atoms[row] = dataset->basis_wfc.get_i_atom(row);
+    auto ao_atoms_memory = watch_memory("spectrum.ao_atoms", ao_atoms);
+    std::vector<Complex> pair_phases(dataset->pbc.Rlist.size() * atom_count * atom_count);
+    auto pair_phases_memory = watch_memory("spectrum.fine_pair_phases", pair_phases);
     for (int ik = 0; ik < fine_nk; ++ik)
     {
         if (sources[ik] != rank) continue;
@@ -666,6 +694,16 @@ FineVelocityMo prepare_fine_velocity_mo(
             || wavefunctions->nc != nao)
             throw std::runtime_error("fine-grid KS wavefunction is incomplete");
 
+        // AO elements on the same atom pair share the nearest-cell phase in every direction.
+        for (std::size_t ir = 0; ir < dataset->pbc.Rlist.size(); ++ir)
+            for (int iat = 0; iat < atom_count; ++iat)
+                for (int jat = 0; jat < atom_count; ++jat)
+                {
+                    const auto &cell = nearest_cells[ir][iat][jat];
+                    const librpa_int::Vector3_Order<int> r(cell[0], cell[1], cell[2]);
+                    pair_phases[(ir * atom_count + iat) * atom_count + jat]
+                        = phase(dataset->kfrac_band_list[ik], r, 1.0);
+                }
         std::vector<int> pair_slots(static_cast<std::size_t>(pair_dimension));
         auto pair_slots_memory = libbse::watch_memory("spectrum.pair_slots", pair_slots);
         for (int pair_in_k = 0; pair_in_k < pair_dimension; ++pair_in_k)
@@ -683,12 +721,9 @@ FineVelocityMo prepare_fine_velocity_mo(
                 for (int row = 0; row < nao; ++row)
                     for (int column = 0; column < nao; ++column)
                     {
-                        const int iat = dataset->basis_wfc.get_i_atom(row);
-                        const int jat = dataset->basis_wfc.get_i_atom(column);
-                        const auto &cell = nearest_cells[ir][iat][jat];
-                        const librpa_int::Vector3_Order<int> r(cell[0], cell[1], cell[2]);
+                        const int iat = ao_atoms[row], jat = ao_atoms[column];
                         velocity_ao(row, column)
-                            += phase(dataset->kfrac_band_list[ik], r, 1.0)
+                            += pair_phases[(ir * atom_count + iat) * atom_count + jat]
                                * velocity_ao_r[ir][direction](row, column);
                     }
             const auto velocity_mo = LibRPA_API::conjugate(*wavefunctions) * velocity_ao
@@ -1104,10 +1139,37 @@ void write_haydock_outputs(const InputParameters &options,
                            const FineVelocityMo &velocity,
                            const TdaApply &apply)
 {
-    validate_velocity_mo(options, velocity);
-    const int dimension = velocity.nk * options.nocc * options.nvirt;
-    int rank = 0;
-    MPI_Comm_rank(dataset.comm_h.comm, &rank);
+    const MPI_Comm comm = dataset.comm_h.comm;
+    int rank = 0, size = 1;
+    MPI_Comm_rank(comm, &rank);
+    MPI_Comm_size(comm, &size);
+    const long long band_pairs = static_cast<long long>(options.nocc) * options.nvirt;
+    // Allgatherv counts and the existing global Hx interface use int dimensions.
+    int dimension = velocity.nk > 0 && options.nocc > 0 && options.nvirt > 0
+                    && band_pairs <= std::numeric_limits<int>::max() / velocity.nk
+                    ? static_cast<int>(velocity.nk * band_pairs) : 0;
+    int minimum_dimension = dimension, maximum_dimension = dimension;
+    MPI_Allreduce(MPI_IN_PLACE, &minimum_dimension, 1, MPI_INT, MPI_MIN, comm);
+    MPI_Allreduce(MPI_IN_PLACE, &maximum_dimension, 1, MPI_INT, MPI_MAX, comm);
+    if (!minimum_dimension || minimum_dimension != maximum_dimension)
+        throw std::invalid_argument("inconsistent or oversized Haydock dimension");
+    const auto part = pair_partition(dimension, size, rank);
+    int valid = velocity.first_pair == part.first && velocity.local_pairs == part.count;
+    try { validate_velocity_mo(options, velocity); }
+    catch (const std::exception &) { valid = 0; }
+    MPI_Allreduce(MPI_IN_PLACE, &valid, 1, MPI_INT, MPI_MIN, comm);
+    if (!valid) throw std::invalid_argument("invalid distributed Haydock velocity input");
+    std::vector<int> counts(size), offsets(size);
+    for (int p = 0; p < size; ++p)
+    {
+        const auto range = pair_partition(dimension, size, p);
+        counts[p] = range.count;
+        offsets[p] = range.first;
+    }
+    // The LRI action still uses global vectors; only these two scratch vectors replicate.
+    std::vector<Complex> global_x(size > 1 ? dimension : 0), global_y;
+    auto global_x_memory = watch_memory("haydock.global_input", global_x);
+    auto global_y_memory = watch_memory("haydock.global_result", global_y);
     const double raw_points = (options.spectrum_energy_max_ev - options.spectrum_energy_min_ev)
                               / options.spectrum_energy_step_ev;
     if (raw_points < 0.0 || raw_points > 1.e7)
@@ -1125,15 +1187,53 @@ void write_haydock_outputs(const InputParameters &options,
     }
     for (int axis = 0; axis < 3; ++axis)
     {
-        std::vector<Complex> seed(dimension, Complex{});
+        if (options.bse_haydock_polarizations.find("xyz"[axis]) == std::string::npos)
+            continue;
+        std::vector<Complex> seed(part.count, Complex{});
         auto seed_memory = watch_memory("haydock.seed", seed);
         for (int pair = 0; pair < velocity.local_pairs; ++pair)
-            seed[velocity.first_pair + pair] = std::conj(
+            seed[pair] = std::conj(
                 velocity.values[static_cast<std::size_t>(axis) * velocity.local_pairs + pair]
                 / velocity.gaps_ha[pair]);
-        MPI_Allreduce(MPI_IN_PLACE, seed.data(), dimension, MPI_C_DOUBLE_COMPLEX,
-                      MPI_SUM, dataset.comm_h.comm);
-        const auto chain = haydock_recursion(apply, seed, options.bse_haydock_iterations);
+        int applied = 0;
+        const auto chain = haydock_recursion(
+            [&](const std::vector<Complex> &x, std::vector<Complex> &y) {
+                if (size == 1) apply(x, y);
+                else
+                {
+                    MPI_Allgatherv(x.data(), part.count, MPI_C_DOUBLE_COMPLEX,
+                                   global_x.data(), counts.data(), offsets.data(),
+                                   MPI_C_DOUBLE_COMPLEX, comm);
+                    apply(global_x, global_y);
+                    int valid_result = global_y.size() == static_cast<std::size_t>(dimension);
+                    MPI_Allreduce(MPI_IN_PLACE, &valid_result, 1, MPI_INT, MPI_MIN, comm);
+                    if (!valid_result)
+                        throw std::runtime_error("Haydock operator returned the wrong global dimension");
+                    y.assign(global_y.begin() + part.first,
+                             global_y.begin() + part.first + part.count);
+                }
+                ++applied;
+                if (rank == 0 && (applied == 1 || applied % 64 == 0))
+                    std::cout << "Haydock axis " << axis << ": apply " << applied
+                              << '/' << std::min(options.bse_haydock_iterations, dimension)
+                              << '\n' << std::flush;
+            }, seed, options.bse_haydock_iterations, size > 1 ? comm : MPI_COMM_NULL);
+        auto quadrature = chain;
+        std::string quadrature_name = "gauss";
+        if (options.bse_haydock_quadrature == "gagq")
+        {
+            try
+            {
+                quadrature = haydock_gagq_chain(chain);
+                quadrature_name = "gagq";
+            }
+            catch (const std::domain_error &error)
+            {
+                if (rank == 0)
+                    std::cout << "Haydock axis " << axis << ": " << error.what()
+                              << "; using standard Gauss quadrature\n";
+            }
+        }
         for (auto &point : spectrum)
         {
             const Complex z = Complex(point.energy_ev, options.spectrum_broadening_ev)
@@ -1142,21 +1242,28 @@ void write_haydock_outputs(const InputParameters &options,
             // Keeping complex z in z*G weights each pole by its excitation
             // energy before broadening, exactly as the ELPA spectrum does.
             point.directional[axis] = -4.0 / (PARAM.constants.pi * PARAM.constants.ry_to_ev)
-                                      * std::imag(z * haydock_resolvent(chain, z));
+                                      * std::imag(z * haydock_resolvent(quadrature, z));
             point.isotropic += point.directional[axis] / 3.0;
         }
         if (rank == 0)
         {
             std::cout << "Haydock axis " << axis << ": " << chain.alpha.size()
-                      << " steps; invariant subspace exhausted: " << chain.terminated << '\n';
+                      << " steps; invariant subspace exhausted: " << chain.terminated
+                      << "; quadrature " << quadrature_name << ", "
+                      << quadrature.alpha.size() << " nodes\n";
+            recurrence << "# axis " << axis << " quadrature " << quadrature_name
+                       << " nodes " << quadrature.alpha.size() << '\n';
             for (std::size_t j = 0; j < chain.alpha.size(); ++j)
                 recurrence << axis << ' ' << j << ' ' << chain.alpha[j] << ' '
                            << chain.beta[j] << ' ' << chain.seed_norm_squared << '\n';
+            recurrence.flush();
+            if (!recurrence) throw std::runtime_error("cannot flush Haydock recurrence");
         }
     }
     if (rank == 0)
         write_spectrum(fs::path(options.output_dir) / "spectrum_singlet_tda.dat",
-                       spectrum, options.spectrum_broadening_ev);
+                       spectrum, options.spectrum_broadening_ev,
+                       options.bse_haydock_polarizations);
 }
 
 } // namespace libbse

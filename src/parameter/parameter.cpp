@@ -210,6 +210,8 @@ void Parameter::parse(const std::string &contents, const fs::path &base_director
         inp.screened_dir = value;
     if (auto value = take("bse_memory_optimized"); !value.empty())
         inp.bse_memory_optimized = parse_boolean("bse_memory_optimized", value);
+    if (auto value = take("bse_kmpi_cache_mb"); !value.empty())
+        inp.bse_kmpi_cache_mb = parse_integer("bse_kmpi_cache_mb", value);
     if (auto value = take("bse_ri_batch_blocks"); !value.empty())
         inp.bse_ri_batch_blocks = parse_integer("bse_ri_batch_blocks", value);
     if (auto value = take("bse_nstates"); !value.empty())
@@ -221,6 +223,10 @@ void Parameter::parse(const std::string &contents, const fs::path &base_director
         inp.bse_haydock_iterations = parse_integer("bse_haydock_iterations", value);
     if (auto value = take("bse_haydock_apply"); !value.empty())
         inp.bse_haydock_apply = lower(value);
+    if (auto value = take("bse_haydock_polarizations"); !value.empty())
+        inp.bse_haydock_polarizations = lower(value);
+    if (auto value = take("bse_haydock_quadrature"); !value.empty())
+        inp.bse_haydock_quadrature = lower(value);
     if (auto value = take("bse_spin_types"); !value.empty())
         inp.bse_spin_types = parse_string_list(value);
     if (auto value = take("bse_continue"); !value.empty())
@@ -282,6 +288,8 @@ void Parameter::validate_and_resolve(const fs::path &base_directory)
     if (inp.bse_plasma_energy_ev > 0 && (inp.screened_format.find("chi0") == std::string::npos
         || inp.bse_tda != "tda" || inp.bse_solver != "elpa"))
         throw std::invalid_argument("effective dynamical BSE requires a chi0 input, bse_tda tda and bse_solver elpa");
+    if (inp.bse_kmpi_cache_mb < 0)
+        throw std::invalid_argument("bse_kmpi_cache_mb must be nonnegative");
     if (inp.bse_ri_batch_blocks < 0)
         throw std::invalid_argument("bse_ri_batch_blocks must be nonnegative");
     inp.bse_solver = lower(trim(inp.bse_solver));
@@ -310,10 +318,19 @@ void Parameter::validate_and_resolve(const fs::path &base_directory)
         throw std::invalid_argument("bse_solver must be elpa, spectrum or haydock");
     if (inp.bse_haydock_iterations <= 0)
         throw std::invalid_argument("bse_haydock_iterations must be positive");
-    if (inp.bse_haydock_apply != "realspace" && inp.bse_haydock_apply != "fft")
-        throw std::invalid_argument("bse_haydock_apply must be realspace or fft");
-    if (inp.bse_haydock_apply == "fft" && inp.bse_solver != "haydock")
-        throw std::invalid_argument("bse_haydock_apply fft requires bse_solver haydock");
+    if (inp.bse_haydock_apply != "realspace" && inp.bse_haydock_apply != "fft"
+        && inp.bse_haydock_apply != "realspace_kmpi")
+        throw std::invalid_argument("bse_haydock_apply must be realspace, realspace_kmpi or fft");
+    const auto &polarizations = inp.bse_haydock_polarizations;
+    if (polarizations.empty() || polarizations.find_first_not_of("xyz") != std::string::npos
+        || std::set<char>(polarizations.begin(), polarizations.end()).size() != polarizations.size())
+        throw std::invalid_argument("bse_haydock_polarizations must be a unique subset of xyz");
+    if (inp.bse_haydock_apply != "realspace" && inp.bse_solver != "haydock")
+        throw std::invalid_argument("bse_haydock_apply fft/realspace_kmpi requires bse_solver haydock");
+    if (inp.bse_haydock_quadrature != "gauss" && inp.bse_haydock_quadrature != "gagq")
+        throw std::invalid_argument("bse_haydock_quadrature must be gauss or gagq");
+    if (inp.bse_haydock_quadrature == "gagq" && inp.bse_solver != "haydock")
+        throw std::invalid_argument("bse_haydock_quadrature gagq requires bse_solver haydock");
     if (inp.bse_solver == "haydock"
         && (inp.bse_tda != "tda" || inp.bse_spin_types != std::vector<std::string>{"singlet"}
             || inp.bse_plasma_energy_ev > 0.0 || inp.bse_nstates != -1
@@ -398,6 +415,7 @@ void Parameter::print(std::ostream &output) const
            << "  bse_plasma_energy_ev: " << inp.bse_plasma_energy_ev << '\n'
            << "  screened_dir: " << inp.screened_dir << '\n'
            << "  bse_memory_optimized: " << inp.bse_memory_optimized << '\n'
+           << "  bse_kmpi_cache_mb: " << inp.bse_kmpi_cache_mb << '\n'
            << "  bse_ri_batch_blocks: " << inp.bse_ri_batch_blocks << '\n'
            << "  bse_nstates: " << inp.bse_nstates << '\n'
            << "  nocc: " << inp.nocc << '\n'
@@ -405,6 +423,8 @@ void Parameter::print(std::ostream &output) const
            << "  bse_solver: " << inp.bse_solver << '\n'
            << "  bse_haydock_iterations: " << inp.bse_haydock_iterations << '\n'
            << "  bse_haydock_apply: " << inp.bse_haydock_apply << '\n'
+           << "  bse_haydock_polarizations: " << inp.bse_haydock_polarizations << '\n'
+           << "  bse_haydock_quadrature: " << inp.bse_haydock_quadrature << '\n'
            << "  bse_spin_types:";
     for (const std::string &spin_type : inp.bse_spin_types)
         output << ' ' << spin_type;

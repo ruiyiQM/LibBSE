@@ -47,6 +47,7 @@ struct InputParameters
     double bse_plasma_energy_ev = 0.0;
     // Storage/scheduling controls only: do not change the transition space.
     bool bse_memory_optimized = true;
+    int bse_kmpi_cache_mb = 2048; // extra cached tensor payload/rank; 0 = bounded path
     int bse_ri_batch_blocks = 64; // maximum returned k-pair blocks/rank; 0 = legacy
     int bse_nstates = -1;
     int nocc = 4;
@@ -54,6 +55,8 @@ struct InputParameters
     std::string bse_solver = "elpa";
     int bse_haydock_iterations = 200;
     std::string bse_haydock_apply = "realspace";
+    std::string bse_haydock_polarizations = "xyz";
+    std::string bse_haydock_quadrature = "gauss";
     std::vector<std::string> bse_spin_types{"singlet", "triplet"};
     int bse_continue = 0;
     std::string bse_tda = "both";

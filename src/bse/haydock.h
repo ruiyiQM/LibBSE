@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mpi.h>
 #include <complex>
 #include <functional>
 #include <vector>
@@ -24,6 +25,17 @@ struct HaydockChain
 HaydockChain haydock_recursion(const TdaApply &apply,
                               const std::vector<std::complex<double>> &seed,
                               int max_steps);
+
+// Collective recurrence with disjoint local vector slices, including empty ones.
+// apply consumes and returns local slices. Norms and overlaps use comm.
+// History storage is O(steps*local_dimension); no global vectors are retained.
+HaydockChain haydock_recursion(const TdaApply &apply,
+                              const std::vector<std::complex<double>> &local_seed,
+                              int max_steps, MPI_Comm comm);
+
+// Generalized averaged Gauss quadrature, using the final residual beta without
+// additional operator applications. Throws domain_error for nonpositive nodes.
+HaydockChain haydock_gagq_chain(const HaydockChain &chain);
 
 std::complex<double> haydock_resolvent(const HaydockChain &chain,
                                       std::complex<double> energy);
