@@ -6,6 +6,14 @@
 
 The 16 `output band` segments in both control files sample all 64 points of the unshifted 4x4x4 grid. `bands_444.in` records those lines. `band_to_energy_qp.py` validates and converts `GW_band1001.out` through `GW_band1016.out` to `aims_gw/energy_qp`, following the existing `11_LibBSE_interpolate` benchmark. The common chemical-potential energy shift cancels from transitions; its e_gs column copies QP energies as a placeholder, while LibBSE obtains KS data from the exporter.
 
+`python3 generate_band.py 8` and `python3 generate_band.py 10` generate the
+64/100 band segments covering complete 8x8x8/10x10x10 meshes. Without an
+argument the script retains the original 3x3x3 mesh. These are sampling
+instructions: FHI-aims calculates the band-point KS energies and coefficients
+from the converged coarse-grid density. Generating the lines does not compute
+or interpolate quasiparticle energies. The QP converter below is still specific
+to the original 4x4x4 GW dataset.
+
 `libbse.in` selects `screened_format fhi_aims_w`, singlet TDA, ELPA, velocity-gauge spectra and all excitation states. The window is four occupied and three empty bands (FHI-aims bands 11--17; GW also includes band 18).
 
 `bse_use_fine_kgrid 1` keeps the RI/screening period at 3x3x3 and uses 4x4x4 KS/QP points for BSE. The expected matrix dimension is 768. This interpolates the coarse real-space interaction; it does not run screening on a 4x4x4 mesh.

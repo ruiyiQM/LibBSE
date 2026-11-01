@@ -101,6 +101,14 @@ ctest --test-dir build-bse --output-on-failure
   output, and rejects missing/truncated blocks, invalid headers and nonfinite
   payloads without changing an existing output file.
 
+## `test_generate_band.py`
+
+- Checks complete, unshifted cubic meshes for grid sizes 2, 3, 4, 8, 10 and 14,
+  with every point appearing exactly once in canonical order.
+- Checks the command-line grid size, the backward-compatible default of 3,
+  and rejection of grids smaller than 2. Sampling instructions do not generate
+  quasiparticle energies.
+
 ## `test_haydock.cpp`
 
 - Compares the continued fraction against the exact spectral resolvent of a

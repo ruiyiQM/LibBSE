@@ -180,6 +180,10 @@ if(LIBBSE_BUILD_TESTING)
     COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/regression_test/general_testcase/test_aims_mommat_to_velocity.py)
 
+  add_test(NAME LibBSE_generate_band
+    COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/regression_test/general_testcase/test_generate_band.py)
+
   add_executable(test_haydock regression_test/general_testcase/test_haydock.cpp)
   target_link_libraries(test_haydock PRIVATE libbse_core)
   add_test(NAME LibBSE_haydock COMMAND test_haydock)
