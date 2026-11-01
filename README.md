@@ -10,8 +10,9 @@ LibBSE solves the periodic Bethe–Salpeter equation from FHI-aims/ABACUS/LibRPA
 The migrated calculation path reads data through LibRPA, constructs the BSE
 matrix elements with the external LibRI checkout, and diagonalizes both the
 Tamm–Dancoff (TDA) and full BSE problems with ELPA. Optical analysis is
-velocity-gauge only. The producer-specific derivation and data mapping are
-documented in [`docs/fhi_aims_io.md`](docs/fhi_aims_io.md).
+velocity-gauge only. Static singlet-TDA spectra also support matrix-free
+LRI/Haydock iterations. Supported producer inputs and conversion steps are
+described in the [workflow examples](examples/README.md).
 
 ## How to build LibBSE
 
@@ -79,8 +80,14 @@ LibRPA workflow. The working path consumes:
 
 For direct FHI-aims exports, use `input_format=fhi_aims`. First run
 `tools/aims_mommat_to_velocity.py AIMS_EXPORT_DIR`; it converts `mommat.h5`
-to the canonical `velocity_matrix` while correcting the Fortran HDF5 k-grid
-axis order. LibBSE aliases that file and the FHI-aims `coulomb_cut_*` files in
+or native `mommat_ks_kpt_*.dat` blocks to the canonical `velocity_matrix`.
+The HDF5 path corrects the Fortran k-grid axis order. Native blocks come from
+`output librpa mommat` with `KS_method serial` and do not require a Fortran
+HDF5 build. Native gradients are converted from lower to upper triangle using
+anti-Hermiticity before the shared velocity conversion. Regenerate native-derived
+`velocity_matrix` files made before this correction; HDF5-derived files are unchanged.
+The converter prefers HDF5 when both formats exist. LibBSE aliases
+the canonical file and the FHI-aims `coulomb_cut_*` files in
 a non-destructive compatibility view. A velocity matrix is required for every
 calculation. Quasiparticle energies must come from the standalone LibRPA step
 (`energy_qp`); FHI-aims `GW_band*.out` files are not a LibBSE input.
@@ -130,6 +137,8 @@ Comments start with `#` or `!`, and the last occurrence of a key wins.
 
 Complete runnable workflow templates for both producers are indexed in
 [`examples/README.md`](examples/README.md).
+For the small H-chain development baseline, see
+[`examples/09_hchain_local`](examples/09_hchain_local/README.md).
 
 Parameter names and enumerated values are case-insensitive. Paths retain their
 case and are resolved relative to the directory containing `libbse.in`.
@@ -231,6 +240,105 @@ Boolean parameters accept `1`, `true`, `t`, `.true.`, or `yes` for true and
   and rank-local amplitude files from `output_dir`, and run only the optical
   analysis. The restart should use the same MPI process count as the
   calculation that wrote the amplitude files.
+- `haydock`: static singlet TDA optical spectrum from LRI matrix-vector actions.
+  Set `bse_tda tda`, `bse_spin_types singlet`, `bse_nstates -1`,
+  `out_bse_eigenvectors false`, and an explicit `spectrum_energy_max_ev`.
+  Writes `spectrum_singlet_tda.dat` and `haydock_singlet_tda.dat` (recurrence
+  coefficients), without excitation eigenvectors or per-state analysis.
+  Both same-grid and double-grid inputs are supported. The exact AO/R action
+  costs O(Nk × NR) for fixed atom/band bases, with NR the retained coarse
+  real-space support. For fixed coarse screening this is linear in fine Nk;
+  the independent O(Nk²) k-pair action remains available for validation.
+
+### `bse_haydock_apply`
+
+- **Default:** `realspace`; accepts `realspace`, `realspace_kmpi` or `fft` with
+  `bse_solver haydock`.
+- `realspace` uses the AO/R sum above, with OpenMP over R images and a private
+  accumulation buffer per thread. `fft` evaluates the same four LRI terms
+  by auxiliary-pair FFT convolution on a complete uniform fine k mesh, including
+  shifted and permuted meshes. It preserves all supplied W(R) and the existing
+  boundary-image averaging, without an auxiliary-rank approximation.
+- The R backend distributes atom pairs first when using up to Nat² MPI ranks,
+  with the complete k sum on each rank and OpenMP over R images. This avoids
+  repeated partial Fourier transforms across Cartesian k-pair partitions.
+  Larger MPI counts retain the Cartesian partition. Packing the complete k
+  sum can increase each rank's peak working memory; assess both time and memory
+  when selecting the MPI/OpenMP layout.
+- `realspace_kmpi` extends the R backend beyond Nat² MPI ranks by splitting k
+  points within each atom pair. It reduces partial Hartree charges and tiled
+  R densities before projecting the locally owned output k points. The LRI
+  operator, boundary-image weights and global normalization are unchanged.
+  This layout is used for Nat² < MPI ranks ≤ Nat² × Nk; smaller counts use
+  the atom-pair layout and excessive counts retain the Cartesian fallback.
+  Hx input/output vectors remain replicated; Krylov history is partitioned over
+  MPI ranks. Density communication is bounded per tile,
+  but more ranks can increase aggregate memory and communication costs.
+- `bse_kmpi_cache_mb` (default **2048**, nonnegative MiB per rank) bounds the
+  additional cached tensor payload in `realspace_kmpi`: virtual products within
+  an R tile, split virtual vertices, R-independent x products and accepted
+  virtual-band mixing matrices. Compatible k
+  ownership reuses these products without assuming real W or changing the kernel.
+  If any owner exceeds its budget, the whole atom-pair communicator uses the
+  original contractions; **0** disables this cache. This is not a total RSS cap:
+  RI data, packets, thread scratch and solver storage remain additional.
+- Distributed-k ownership keeps inversion partners together when enough orbits
+  exist to leave every owner nonempty; otherwise it uses the cyclic partition.
+  A local virtual-vertex fit tests `G(-k) = conj(G(k)) U` using two-pass QR.
+  Relative residual ≤ 1e-13 and unitarity error ≤ 1e-10 allow reuse of both
+  complex W products through U. Other pairs retain the cached contractions;
+  no time-reversal relation is imposed on input amplitudes or occupied states.
+  U tensors share the existing cache budget. Insufficient extra budget disables
+  only this reuse. Geometric partner slots are built once and stored per local k.
+- A distributed-k `MolecularLri` object supports the AO/R action; its dense,
+  streamed k-pair and direct FFT reference methods fail explicitly. Construct
+  a separate `realspace` or `fft` object for these references. Existing
+  `realspace` and `fft` objects keep their previous behavior.
+- Use one BLAS thread inside the OpenMP R loop. An OpenMP OpenBLAS build may
+  require its runtime API; `OPENBLAS_NUM_THREADS=1` alone is not sufficient.
+- Enable the optional backend with `-DLIBBSE_ENABLE_FFTW=ON`; set
+  `-DFFTW3_ROOT=/path/to/fftw` if FFTW3 is outside the default search path.
+  Requesting `fft` without this dependency fails explicitly.
+- At fixed cell, AO, auxiliary and band sizes, FFT action costs O(Nk log Nk)
+  time and O(Nk) working storage even when the full R support grows with Nk.
+  Auxiliary-pair contractions have a substantial prefactor; the default R sum
+  can be faster for small fixed support. Screening construction and Krylov
+  reorthogonalization are separate costs. For m steps, the FFT iteration costs
+  O(m Nk log Nk + m² D) time and O(m D + Nk) storage at fixed cell bases.
+
+### `bse_haydock_iterations`
+
+- **Default:** `200`; must be positive.
+- Caps each Cartesian Krylov chain at `min(iterations, BSE dimension)`.
+  Two-pass reorthogonalization retains O(m D) history globally, or O(m D/P)
+  per rank for a balanced P-rank partition. The two global Hx scratch vectors
+  remain replicated and add O(D) storage per rank.
+  Compare spectra at increasing iteration counts to establish convergence;
+  stopping at the cap does not imply convergence. With D = Nv Nc Nk and m
+  iterations, full reorthogonalization adds O(m² D) work and O(m D) storage.
+  This is linear in Nk only when m and the coarse support stay fixed. See the
+  [H-chain double-grid comparison](examples/09_hchain_local/README.md).
+
+### `bse_haydock_polarizations`
+
+- **Default:** `xyz`. Accepts a nonempty subset of `xyz`, without duplicates.
+- Computes one Krylov chain per selected direction; for example, `x` runs only
+  the x chain. Spectrum columns follow x, y, z order and include only the
+  selected directions. The isotropic column is written only for all three.
+- A single direction can represent an isotropic material after checking the
+  directional spectra. The iteration cap still requires a convergence check.
+
+### `bse_haydock_quadrature`
+
+- **Default:** `gauss`, the finite Haydock continued fraction. `gagq` enables
+  generalized averaged Gauss quadrature for `bse_solver haydock`.
+- Uses the final residual coefficient to form up to `2m-1` quadrature nodes
+  from `m` actual operator applications, without extra Hx calls. The recurrence
+  file retains the actual coefficients and records the quadrature used per axis.
+- A nonpositive extended quadrature matrix causes an explicit fallback to
+  standard Gauss. This option can improve spectral convergence; the iteration
+  cap still needs validation for the selected energy window and broadening.
+- Method: [Shao et al. (2018), Eq. (14)](https://math.berkeley.edu/~linlin/publications/LanczosBSE.pdf).
 
 ### `bse_spin_types`
 
@@ -326,6 +434,8 @@ Boolean parameters accept `1`, `true`, `t`, `.true.`, or `yes` for true and
   datasets generated with that convention, but is unsafe as a general gauge
   fixing inside degenerate subspaces.
 
+LibRI/LibComm communicates from asynchronous threads, so the driver requires
+`MPI_THREAD_MULTIPLE`, including for a single MPI process.
 After initialization, rank 0 prints the MPI process count, requested/provided
 MPI thread level, and OpenMP thread configuration. At shutdown it also prints
 a hierarchical LibBSE timing profile with call counts, CPU time, and wall time
@@ -420,5 +530,6 @@ thread. Never reset accounting to manufacture a zero final residual.
 
 Uniform fine-grid transfer-q canonicalization is automatic. Even-grid endpoint
 averaging is optional (`bse_w_boundary_average`, default false). Static full W
-can be read with `screened_format full_w_binary`. See the
-[usage and cache format guide (Chinese)](docs/w_interpolation_and_cache.md).
+can be read with `screened_format full_w_binary`. Binary/text equivalence
+and rejection of incomplete q grids are covered by the
+[screening regression checks](regression_test/doc/UNIT_TESTS.md).

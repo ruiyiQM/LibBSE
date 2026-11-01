@@ -9,8 +9,9 @@
 LibBSE 使用 FHI-aims、ABACUS 或 LibRPA 的输出求解周期性 Bethe--Salpeter
 方程。当前计算路径通过 LibRPA 读取数据，使用外部 LibRI 源码构造 BSE
 矩阵元，并用 ELPA 对 Tamm--Dancoff 近似（TDA）和完整 BSE 问题进行对角化。
-光学分析目前仅支持速度规范。不同数据生产程序对应的公式推导和数据映射见
-[`docs/fhi_aims_io_zh.md`](docs/fhi_aims_io_zh.md)。
+光学分析目前仅支持速度规范。静态 singlet TDA 光谱还可用矩阵无关的 LRI/Haydock
+递推求解。支持的数据生产程序、输入和转换步骤见
+[工作流示例](examples/README.md)。
 
 ## 编译 LibBSE
 
@@ -66,8 +67,11 @@ LibBSE 从当前工作目录读取 `libbse.in`。`input_dir` 参数指向 LibRPA
   `Wc_Mu_*_Nu_*_iR_*_ifreq_0.mtx` 文件，作为静态极限近似。
 
 对于 FHI-aims 直接导出的数据，设置 `input_format=fhi_aims`。先运行
-`tools/aims_mommat_to_velocity.py AIMS_EXPORT_DIR`，把 `mommat.h5` 转为标准
-`velocity_matrix`；脚本会显式修正 Fortran HDF5 的 k 网格轴序。LibBSE 再通过
+`tools/aims_mommat_to_velocity.py AIMS_EXPORT_DIR`，把 `mommat.h5`（或本地
+`output librpa mommat` 导出的 `mommat_ks_kpt_*.dat`）转为标准
+`velocity_matrix`；HDF5 路径会显式修正 Fortran k 网格轴序。原生流存下三角梯度，
+读取时利用反 Hermitian 性转为 HDF5 的上三角约定，再共同转换为速度矩阵。
+修正前从原生流生成的 `velocity_matrix` 需要重新转换；HDF5 生成的文件不变。LibBSE 再通过
 非破坏性的兼容视图链接该文件与 `coulomb_cut_*`。所有计算都必须提供速度矩阵。
 准粒子能量必须来自独立 LibRPA 步骤写出的 `energy_qp`；LibBSE 不再读取
 FHI-aims 的 `GW_band*.out`。
@@ -219,6 +223,81 @@ ABACUS 与 FHI-aims 的完整可运行流程模板见
 - `spectrum`：跳过 kernel 构造和 ELPA，从 `output_dir` 重新读取所请求的
   能量及每个 rank 的局域振幅，只执行光学分析。重启时应使用与写出振幅文件
   相同的 MPI 进程数。
+- `haydock`：用 LRI 矩阵作用递推静态 singlet TDA 光谱。需设置 `bse_tda tda`、
+  `bse_spin_types singlet`、`bse_nstates -1`、`out_bse_eigenvectors false`，
+  并显式给出 `spectrum_energy_max_ev`。输出 `spectrum_singlet_tda.dat` 和
+  递推系数 `haydock_singlet_tda.dat`，不生成激发本征矢或逐态分析。
+  支持同网格和双网格输入；在原子/能带基固定时，精确 AO/R 作用每次为
+  O(Nk × NR)，NR 是保留的 coarse 实空间支撑。固定 coarse screening 后，
+  它随 fine Nk 线性增长；另保留独立的 O(Nk²) k-pair 参考作用用于验证。
+
+### `bse_haydock_apply`
+
+- **默认值：** `realspace`；在 `bse_solver haydock` 下接受 `realspace`、
+  `realspace_kmpi` 或 `fft`。
+- `realspace` 使用上述 AO/R 求和，以 OpenMP 并行 R 像，各线程独立累加；`fft` 在完整均匀 fine k 网格上，用辅助基对
+  FFT 卷积计算相同四项 LRI 作用，支持 shifted 和乱序网格。保留输入的全部 W(R)
+  及原有边界等价像平均，不引入辅助基秩近似。
+- R 后端在 MPI 进程数不超过原子数平方时，优先分配原子对；各进程保留完整
+  k 求和，并以 OpenMP 并行 R 像，避免 Cartesian k 点对分区中的重复部分变换。
+  更多 MPI 进程沿用 Cartesian 分区。完整 k 切片的打包可能增加每进程的峰值
+  工作存储，选择 MPI/OpenMP 配置时应同时评估耗时和内存。
+- `realspace_kmpi` 在每个原子对内继续分配 k 点，对部分 Hartree charge 和分块
+  R 密度归约后，仅回投本进程拥有的输出 k 点。LRI 算符、边界像权重与全局归一化
+  不变。在原子数平方 < MPI 进程数 ≤ 原子数平方 × Nk 时启用；较少进程使用
+  原子对分区，超过上限回退 Cartesian 分区。Hx 输入/输出向量仍在每进程复制，
+  Krylov 历史按 MPI 分区；密度通信
+  按有界 tile 进行，但增加 MPI 进程可能增加总内存和通信成本。
+- `bse_kmpi_cache_mb` 默认 **2048**，为每进程额外缓存张量载荷的非负 MiB 预算。
+  `realspace_kmpi` 在 k 分区兼容时，复用 R tile 内的虚带乘积、实虚分离的虚带顶点及
+  与 R 无关的 x 乘积，以及通过检查的虚带混合矩阵；保留完整复数 W 和原算符。任一 owner 超预算时，整个原子对
+  通信组统一使用原收缩；设为 **0** 可关闭缓存。该预算不是总 RSS 上限，RI 数据、
+  通信包、线程 scratch 和求解器存储仍需另计。
+- 分布 k 时，若反演轨道数足够保证各 owner 非空，就把 k/−k 伙伴放在一起；
+  否则沿用 cyclic 分区。两遍 QR 检验虚带顶点 `G(-k) = conj(G(k)) U`，仅在相对
+  残差 ≤1e−13、酉性误差 ≤1e−10 时通过 U 复用完整复数 W 的乘积；其他点对沿用
+  已有缓存收缩，不对输入振幅或 occupied states 施加时间反演约束。U 张量共用
+  现有缓存预算，额外空间不足时仅关闭这项复用。几何伙伴槽位在初始化时建立，
+  每进程仅持久保存本地 k 点对应的槽位。
+- 分布 k 的 `MolecularLri` 对象支持 AO/R 作用，其完整矩阵、streamed k-pair 和
+  直接 FFT 参考调用会明确报错。需要这些参考时，单独构造 `realspace` 或 `fft`
+  对象；原有两种模式的调用行为保持不变。
+- OpenMP R 循环内的 BLAS 应使用单线程。OpenMP 版本 OpenBLAS 可能需要通过
+  运行时 API 控制，仅设置 `OPENBLAS_NUM_THREADS=1` 不足以保证单线程。
+- 构建时启用 `-DLIBBSE_ENABLE_FFTW=ON`；FFTW3 不在默认搜索路径时设置
+  `-DFFTW3_ROOT=/path/to/fftw`。缺少此依赖时请求 `fft` 会明确报错。
+- 固定每胞原子、AO、辅助基和能带数时，即使完整 R 支撑随 Nk 增大，FFT 每次
+  作用仍为 O(Nk log Nk) 时间、O(Nk) 工作存储。辅助基对收缩的前因子较大，
+  小的固定 R 支撑可能更适合默认求和；screening 构建和 Krylov 重正交单独计量。
+  m 步 FFT 迭代为 O(m Nk log Nk + m² D) 时间、O(m D + Nk) 存储，固定每胞基组。
+
+### `bse_haydock_iterations`
+
+- **默认值：** `200`，必须为正数。
+- 每个笛卡尔方向的 Krylov 链最多进行 `min(迭代数, BSE 维度)` 步。
+  双遍重正交的全局历史存储为 O(m D)，均匀分到 P 个 MPI 进程后每进程为
+  O(m D/P)；两个全局 Hx scratch 向量仍复制，每进程另需 O(D) 存储。
+  应增加迭代数比较光谱以判断收敛；
+  达到迭代上限不代表收敛。令 D = Nv Nc Nk、m 为迭代数，重正交另需
+  O(m² D) 工作量；只有 m 和 coarse 支撑固定时，整个递推才随 Nk 线性增长。
+  完整操作见 [H chain 双网格验证](examples/09_hchain_local/README.md)。
+
+### `bse_haydock_polarizations`
+
+- **默认值：** `xyz`。接受非空且不重复的 `xyz` 子集。
+- 每个选定方向计算一条 Krylov 链；例如 `x` 只计算 x 方向。
+  光谱按 x、y、z 顺序输出所选方向，只有三个方向均计算时才输出各向同性列。
+- 对各向同性材料，检查方向光谱一致后可用一个方向代表；迭代步数仍需收敛验证。
+
+### `bse_haydock_quadrature`
+
+- **默认值：** `gauss`，即有限步 Haydock 连分式。`gagq` 为广义平均 Gauss
+  求积，只适用于 `bse_solver haydock`。
+- 利用最后一个残差系数，将实际 `m` 次算子作用的结果扩展为最多 `2m-1` 个
+  求积节点，不增加 Hx。递推文件仍保存实际系数，并记录各方向实际使用的求积。
+- 若扩展矩阵不是正定矩阵，明确提示并回退到标准 Gauss。这一选项可能改善光谱
+  收敛，但仍须针对能量窗口和展宽验证迭代步数。
+- 方法依据：[Shao 等（2018），式 (14)](https://math.berkeley.edu/~linlin/publications/LanczosBSE.pdf)。
 
 ### `bse_spin_types`
 
@@ -309,6 +388,8 @@ ABACUS 与 FHI-aims 的完整可运行流程模板见
   的重叠进行对齐。该模式保留给使用此约定生成的数据；一般情况下不能安全地
   用它固定简并子空间的规范。
 
+LibRI/LibComm 会从异步线程通信，因此主程序要求 `MPI_THREAD_MULTIPLE`，
+即使只运行一个 MPI 进程也需要此支持。
 初始化后，rank 0 会输出 MPI 进程数、请求/实际提供的 MPI 线程级别以及
 OpenMP 线程配置。程序结束时还会输出分层的 LibBSE 计时表，其中包括文件
 读取、相互作用准备、LibRI 矩阵构造、ELPA 求解、速度矩阵准备和光谱分析的
@@ -389,5 +470,5 @@ ELPA 计算相同的 MPI 进程数。
 ### W 插值与二进制缓存
 
 均匀细网格 q 去重自动启用；偶数网格边界平均默认关闭。
-完整静态 W 可从二进制缓存读取。使用场景、参数和格式见
-[W 插值与二进制缓存](docs/w_interpolation_and_cache.md)。
+完整静态 W 可通过 `screened_format full_w_binary` 读取。二进制/文本等价性及
+不完整 q 网格的拒绝行为由[屏蔽输入回归检查](regression_test/doc/UNIT_TESTS.md)覆盖。
