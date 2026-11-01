@@ -2,7 +2,7 @@
 /libbse.in
 /libbse.d/
 
-/regression_test/**/__pycache__/
+__pycache__/
 
 /build-ci/
 /ci-deps/
