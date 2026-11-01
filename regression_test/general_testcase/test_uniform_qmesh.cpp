@@ -61,5 +61,33 @@ int main()
         throw std::runtime_error("boundary average changed coarse-grid W");
     if (std::abs(libbse::w_boundary_phase_delta(w_fine_q,{-1,1,-1},{3,3,3}))>1.e-14)
         throw std::runtime_error("boundary average changed odd-grid phases");
+    for(const std::array<int,3> cell : {std::array<int,3>{-2,-2,-2}, {-2,0,-2}, {0,-2,1}, {1,1,1}})
+        for(const std::array<double,3> q : {w_fine_q, std::array<double,3>{.25,.5,.75}})
+            for(const bool average : {false,true}) {
+                const std::array<int,3> period{4,4,4};
+                std::complex<double> sum{};
+                double weight=0.;
+                for(const auto &[image,factor] : libbse::w_boundary_images(cell,period,average)) {
+                    double angle=0.;
+                    for(int axis=0;axis<3;++axis)angle+=q[axis]*image[axis];
+                    sum+=factor*std::polar(1.,w_two_pi*angle);
+                    weight+=factor;
+                }
+                double angle=0.;
+                for(int axis=0;axis<3;++axis)angle+=q[axis]*cell[axis];
+                auto expected=std::polar(1.,w_two_pi*angle);
+                if(average)expected+=libbse::w_boundary_phase_delta(q,cell,period);
+                if(std::abs(sum-expected)>1.e-13 || std::abs(weight-1.)>1.e-15)
+                    throw std::runtime_error("real-space boundary images differ on faces/edges/corners");
+            }
+    // Pair each expanded image before averaging; averaging the phases gives cross terms.
+    std::complex<double> paired{},averaged{};
+    for(const auto &[cell,weight] : libbse::w_boundary_images({-1,0,0},{2,1,1},true)) {
+        const auto phase=std::polar(1.,w_two_pi*.25*cell[0]);
+        paired+=weight*std::conj(phase)*phase;
+        averaged+=weight*phase;
+    }
+    if(std::abs(paired-1.)>1e-14 || std::norm(averaged)>1e-14)
+        throw std::runtime_error("boundary phases must remain paired per image");
     std::cout<<"Uniform transfer mesh checks passed\n";
 }

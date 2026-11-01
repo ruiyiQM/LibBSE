@@ -4,10 +4,12 @@
 #include <librpa_file_reader.hpp>
 #include <mpi.h>
 
+#include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iomanip>
 #include <stdexcept>
 #include <vector>
 
@@ -68,6 +70,84 @@ void test_coarse_qp_reader(const fs::path &input_dir)
     if (std::abs(qp.direct_gap_ry - 0.7) > 1.0e-13
         || std::abs(qp.indirect_gap_ry - 0.7) > 1.0e-13)
         throw std::runtime_error("coarse-grid quasiparticle gap is incorrect");
+}
+
+void test_uniform_qp_lookup(const fs::path &input_dir)
+{
+    librpa_int::Dataset dataset(MPI_COMM_WORLD);
+    dataset.mf_band = librpa_int::MeanField(1, 8, 3, 1);
+    for (int x = 0; x < 2; ++x)
+        for (int y = 0; y < 2; ++y)
+            for (int z = 0; z < 2; ++z)
+                dataset.kfrac_band_list.push_back({.1 + .5*x, .2 + .5*y, .3 + .5*z});
+    std::reverse(dataset.kfrac_band_list.begin(), dataset.kfrac_band_list.end());
+    libbse::InputParameters options;
+    options.input_dir = input_dir.string();
+    options.qp_data = input_dir.string();
+    options.qp_format = "energy_qp";
+    options.nocc = options.nvirt = 1;
+    const std::vector<int> order{7,6,5,4,3,2,1,0};
+    const auto write = [&](const std::vector<int> &indices, double displacement = 5.e-6) {
+        std::ofstream output(input_dir / "energy_qp");
+        output << std::setprecision(17);
+        for (const int i : indices)
+        {
+            const auto &k = dataset.kfrac_band_list[i];
+            output << "K_point " << i+1 << " : " << k.x-1+displacement << ' ' << k.y-1 << ' ' << k.z-1 << '\n'
+                   << "1 2 -1 -1\n2 2 -.2 " << -.2-.01*i
+                   << "\n3 0 .3 " << .3+.01*i << "\n---\n";
+        }
+    };
+    const auto verify = [](const libbse::QuasiparticleBands &qp) {
+        if (qp.ncore != 1 || qp.nk != 8) throw std::runtime_error("uniform QP dimensions differ");
+        for (int i = 0; i < 8; ++i)
+            if (std::abs(qp.energies_ry[2*i] - (-.4-.02*i)) > 1.e-13
+                || std::abs(qp.energies_ry[2*i+1] - (.6+.02*i)) > 1.e-13)
+                throw std::runtime_error("shifted/permuted/periodic QP lookup changed energies");
+    };
+    write(order);
+    verify(libbse::read_qp_bands(options, dataset));
+    {
+        std::ofstream output(input_dir / "GW_band_spin_1.dat");
+        output << std::setprecision(17);
+        for (const int i : order)
+        {
+            const auto &k = dataset.kfrac_band_list[i];
+            const double ev_per_ha = 2 * libbse::PARAM.constants.ry_to_ev;
+            output << i+1 << ' ' << k.x-1 << ' ' << k.y-1 << ' ' << k.z-1
+                   << " .25 " << -ev_per_ha << " .25 " << (-.2-.01*i)*ev_per_ha
+                   << " 0 " << (.3+.01*i)*ev_per_ha << '\n';
+        }
+    }
+    options.qp_format = "fine_band";
+    verify(libbse::read_qp_bands(options, dataset));
+    options.qp_format = "energy_qp";
+    const auto reject = [&](const librpa_int::Dataset &data, const std::string &message) {
+        try { (void)libbse::read_qp_bands(options, data); }
+        catch (const std::runtime_error &error) {
+            if (std::string(error.what()).find(message) != std::string::npos) return;
+            throw;
+        }
+        throw std::runtime_error("invalid QP input was accepted: " + message);
+    };
+    auto duplicate = order;
+    duplicate[0] = duplicate[1];
+    write(duplicate); reject(dataset, "duplicate");
+    auto missing = order;
+    missing.pop_back();
+    write(missing); reject(dataset, "missing");
+    write(order, .1); reject(dataset, "absent");
+    dataset.kfrac_band_list[0] = dataset.kfrac_band_list[1];
+    write(order); reject(dataset, "ambiguous");
+
+    librpa_int::Dataset dense(MPI_COMM_WORLD);
+    dense.mf_band = librpa_int::MeanField(1, 10000, 3, 1);
+    for (int k = 0; k < 10000; ++k) dense.kfrac_band_list.push_back({k/10000.,0.,0.});
+    {
+        std::ofstream output(input_dir / "energy_qp");
+        output << "K_point 1 : 0.00005 0 0\n1 2 -1 -1\n2 2 -.2 -.2\n3 0 .3 .3\n---\n";
+    }
+    reject(dense, "ambiguous");
 }
 
 void test_aims_reader_view(const fs::path &input_dir, const fs::path &output_dir)
@@ -144,6 +224,7 @@ int main(int argc, char **argv)
         fs::create_directories(wc_dir);
 
         test_coarse_qp_reader(input_dir);
+        test_uniform_qp_lookup(input_dir);
         test_aims_reader_view(input_dir, root / "adapter_output");
         test_aims_reader_rejects_missing_velocity(
             root / "missing_velocity_input",

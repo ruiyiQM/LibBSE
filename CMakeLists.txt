@@ -180,6 +180,41 @@ if(LIBBSE_BUILD_TESTING)
     COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/regression_test/general_testcase/test_aims_mommat_to_velocity.py)
 
+  add_executable(test_haydock regression_test/general_testcase/test_haydock.cpp)
+  target_link_libraries(test_haydock PRIVATE libbse_core)
+  add_test(NAME LibBSE_haydock COMMAND test_haydock)
+
+  add_executable(test_haydock_mpi regression_test/general_testcase/test_haydock_mpi.cpp)
+  target_link_libraries(test_haydock_mpi PRIVATE libbse_core)
+  foreach(ranks IN ITEMS 1 2 4)
+    add_test(NAME LibBSE_haydock_mpi${ranks}
+      COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${ranks}
+              $<TARGET_FILE:test_haydock_mpi>)
+    set_tests_properties(LibBSE_haydock_mpi${ranks} PROPERTIES
+      PROCESSORS ${ranks} TIMEOUT 120
+      ENVIRONMENT "OMP_NUM_THREADS=1;OPENBLAS_NUM_THREADS=1")
+  endforeach()
+
+  add_executable(test_fft_convolution regression_test/general_testcase/test_fft_convolution.cpp)
+  target_link_libraries(test_fft_convolution PRIVATE libbse_core)
+  add_test(NAME LibBSE_fft_convolution COMMAND test_fft_convolution)
+
+  foreach(script IN ITEMS ci_report lri_kernel_report)
+    add_test(NAME LibBSE_${script}
+      COMMAND ${Python3_EXECUTABLE}
+              ${CMAKE_CURRENT_SOURCE_DIR}/regression_test/general_testcase/test_${script}.py)
+  endforeach()
+
+  add_executable(test_tr_virtual regression_test/general_testcase/test_tr_virtual.cpp)
+  target_link_libraries(test_tr_virtual PRIVATE libbse_core)
+  add_test(NAME LibBSE_tr_virtual COMMAND test_tr_virtual)
+
+  add_executable(test_kmpi_contractions regression_test/general_testcase/test_kmpi_contractions.cpp)
+  target_link_libraries(test_kmpi_contractions PRIVATE libbse_core)
+  add_test(NAME LibBSE_kmpi_contractions COMMAND test_kmpi_contractions)
+  set_tests_properties(LibBSE_kmpi_contractions PROPERTIES
+    ENVIRONMENT "OMP_NUM_THREADS=1;OPENBLAS_NUM_THREADS=1")
+
   add_executable(test_molecular_lri_comm
     regression_test/general_testcase/test_molecular_lri_comm.cpp)
   target_link_libraries(test_molecular_lri_comm PRIVATE libbse_core)
@@ -212,9 +247,20 @@ if(LIBBSE_BUILD_TESTING)
 endif()
 
 if(LIBBSE_BUILD_TESTING)
-  # Needs real producer data; run explicitly from an integration-case directory.
+  # Real producer fixtures exercise both explicit and matrix-free actions.
   add_executable(test_ri_streaming regression_test/general_testcase/test_ri_streaming.cpp)
   target_link_libraries(test_ri_streaming PRIVATE libbse_core)
+  foreach(kernel_case IN ITEMS h_cached h_cached_capped h_bounded h_mixed_capped h_complex h_owner_fallback si_cached si_small_budget)
+    add_test(NAME LibBSE_lri_kernel_${kernel_case}
+      COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/regression_test/backend/run_lri_kernel.py
+        --executable $<TARGET_FILE:test_ri_streaming>
+        --work ${CMAKE_CURRENT_BINARY_DIR}/lri_kernel_runs --case ${kernel_case}
+        --fftw $<IF:$<BOOL:${LIBBSE_ENABLE_FFTW}>,ON,OFF>)
+    set_tests_properties(LibBSE_lri_kernel_${kernel_case} PROPERTIES
+      LABELS "lri_kernel" PROCESSORS 16 TIMEOUT 1200
+      ENVIRONMENT "OPENBLAS_NUM_THREADS=1;LIBBSE_MPI_BIND_TO=none")
+  endforeach()
+  set_tests_properties(LibBSE_lri_kernel_h_owner_fallback PROPERTIES PROCESSORS 32)
 endif()
 
 if(LIBBSE_BUILD_TESTING)
@@ -252,6 +298,69 @@ endif()
 
 option(LIBBSE_TEST_REAL_SI "Register bundled Si 222 2v2c regression tests" ON)
 if(LIBBSE_BUILD_TESTING AND LIBBSE_TEST_REAL_SI)
+  add_test(NAME LibBSE_real_Si222_haydock_native_w
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/regression_test/backend/run_real_si.py
+      --executable $<TARGET_FILE:LibBSE>
+      --work ${CMAKE_CURRENT_BINARY_DIR}/real_si_runs --case native_w --solver haydock)
+  set_tests_properties(LibBSE_real_Si222_haydock_native_w PROPERTIES
+    LABELS "real_si" PROCESSORS 2 TIMEOUT 1200
+    ENVIRONMENT "OMP_NUM_THREADS=2;OPENBLAS_NUM_THREADS=1")
+  add_test(NAME LibBSE_real_Si222_haydock_native_w_x
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/regression_test/backend/run_real_si.py
+      --executable $<TARGET_FILE:LibBSE>
+      --work ${CMAKE_CURRENT_BINARY_DIR}/real_si_runs --case native_w --solver haydock
+      --polarizations x)
+  set_tests_properties(LibBSE_real_Si222_haydock_native_w_x PROPERTIES
+    LABELS "real_si" PROCESSORS 2 TIMEOUT 1200
+    ENVIRONMENT "OMP_NUM_THREADS=2;OPENBLAS_NUM_THREADS=1")
+  foreach(si_case IN ITEMS native_w native_w_mpi2)
+    add_test(NAME LibBSE_real_Si222_haydock_gagq_${si_case}
+      COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/regression_test/backend/run_real_si.py
+        --executable $<TARGET_FILE:LibBSE>
+        --work ${CMAKE_CURRENT_BINARY_DIR}/real_si_runs --case ${si_case}
+        --solver haydock --polarizations x --quadrature gagq)
+    set_tests_properties(LibBSE_real_Si222_haydock_gagq_${si_case} PROPERTIES
+      LABELS "real_si" PROCESSORS 2 TIMEOUT 1200
+      ENVIRONMENT "OMP_NUM_THREADS=2;OPENBLAS_NUM_THREADS=1")
+  endforeach()
+  add_test(NAME LibBSE_real_Si222_haydock_atom_partition
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/regression_test/backend/run_real_si.py
+      --executable $<TARGET_FILE:LibBSE>
+      --work ${CMAKE_CURRENT_BINARY_DIR}/real_si_runs --case native_w_mpi4
+      --solver haydock --polarizations x --quadrature gagq)
+  set_tests_properties(LibBSE_real_Si222_haydock_atom_partition PROPERTIES
+    LABELS "real_si" PROCESSORS 4 TIMEOUT 1200
+    ENVIRONMENT "OMP_NUM_THREADS=1;OPENBLAS_NUM_THREADS=1")
+  add_test(NAME LibBSE_real_Si222_haydock_chi0_headwing_mpi2
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/regression_test/backend/run_real_si.py
+      --executable $<TARGET_FILE:LibBSE>
+      --work ${CMAKE_CURRENT_BINARY_DIR}/real_si_runs --case chi0_headwing_mpi2
+      --solver haydock --polarizations x)
+  set_tests_properties(LibBSE_real_Si222_haydock_chi0_headwing_mpi2 PROPERTIES
+    LABELS "real_si" PROCESSORS 2 TIMEOUT 1200
+    ENVIRONMENT "OMP_NUM_THREADS=1;OPENBLAS_NUM_THREADS=1")
+  foreach(si_case IN ITEMS native_w_mpi8 chi0_headwing_mpi8)
+    add_test(NAME LibBSE_real_Si222_haydock_kmpi_${si_case}
+      COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/regression_test/backend/run_real_si.py
+        --executable $<TARGET_FILE:LibBSE>
+        --work ${CMAKE_CURRENT_BINARY_DIR}/real_si_runs --case ${si_case}
+        --solver haydock --apply realspace_kmpi --polarizations x --quadrature gagq)
+    set_tests_properties(LibBSE_real_Si222_haydock_kmpi_${si_case} PROPERTIES
+      LABELS "real_si" PROCESSORS 8 TIMEOUT 1200
+      ENVIRONMENT "OMP_NUM_THREADS=1;OPENBLAS_NUM_THREADS=1;LIBBSE_MPI_BIND_TO=none")
+  endforeach()
+  if(LIBBSE_ENABLE_FFTW)
+    foreach(si_case IN ITEMS native_w native_w_mpi2)
+      add_test(NAME LibBSE_real_Si222_haydock_fft_${si_case}
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/regression_test/backend/run_real_si.py
+          --executable $<TARGET_FILE:LibBSE>
+          --work ${CMAKE_CURRENT_BINARY_DIR}/real_si_runs --case ${si_case}
+          --solver haydock --apply fft)
+      set_tests_properties(LibBSE_real_Si222_haydock_fft_${si_case} PROPERTIES
+        LABELS "real_si" PROCESSORS 2 TIMEOUT 1200
+        ENVIRONMENT "OMP_NUM_THREADS=1;OPENBLAS_NUM_THREADS=1")
+    endforeach()
+  endif()
   foreach(si_case IN ITEMS native_w chi0_headwing native_w_1v1c dynamic
       native_w_unbatched native_w_mpi2 chi0_headwing_mpi2 boundary)
     add_test(NAME LibBSE_real_Si222_${si_case}

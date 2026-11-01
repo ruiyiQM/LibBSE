@@ -126,6 +126,38 @@ void test_invalid_or_unsupported_parameters_are_rejected()
 
     require(rejected("screened_format librpa_chi0\nbse_plasma_energy_ev 15\nbse_tda tda\nbse_spin_types ipa\n"), "IPA silently accepted an effective screening model");
     require(rejected("bse_plasma_energy_ev nan\n"), "nonfinite plasma energy was accepted");
+    const std::string haydock="bse_solver haydock\nbse_tda tda\nbse_spin_types singlet\nout_bse_eigenvectors false\nspectrum_energy_max_ev 20\n";
+    libbse::Parameter iterative;
+    iterative.parse("input_dir data\n"+haydock+"bse_haydock_iterations 32\n", "/tmp");
+    require(iterative.inp.bse_haydock_iterations==32,"Haydock iteration count was not parsed");
+    iterative.parse("input_dir data\n"+haydock+"bse_haydock_apply fft\n", "/tmp");
+    require(iterative.inp.bse_haydock_apply=="fft","FFT action was not parsed");
+    iterative.parse("input_dir data\n"+haydock+"bse_haydock_apply REALSPACE_KMPI\n", "/tmp");
+    require(iterative.inp.bse_haydock_apply=="realspace_kmpi","distributed-k action was not parsed");
+    require(iterative.inp.bse_kmpi_cache_mb==2048,"default kmpi cache budget changed");
+    for (int budget : {0,1,512}) {
+        iterative.parse("input_dir data\n"+haydock+"bse_kmpi_cache_mb "+std::to_string(budget)+"\n", "/tmp");
+        require(iterative.inp.bse_kmpi_cache_mb==budget,"kmpi cache budget was not parsed");
+    }
+    require(rejected("bse_kmpi_cache_mb -1\n"),"negative kmpi cache budget was accepted");
+    require(rejected("bse_kmpi_cache_mb 1.5\n"),"fractional kmpi cache budget was accepted");
+    require(iterative.inp.bse_haydock_polarizations=="xyz","default polarizations changed");
+    require(iterative.inp.bse_haydock_quadrature=="gauss","default quadrature changed");
+    iterative.parse("input_dir data\n"+haydock+"bse_haydock_quadrature GAGQ\n", "/tmp");
+    require(iterative.inp.bse_haydock_quadrature=="gagq","GAGQ was not parsed");
+    require(rejected(haydock+"bse_haydock_quadrature invalid\n"),"invalid quadrature was accepted");
+    require(rejected("bse_haydock_quadrature gagq\n"),"unused GAGQ was accepted for ELPA");
+    iterative.parse("input_dir data\n"+haydock+"bse_haydock_polarizations X\n", "/tmp");
+    require(iterative.inp.bse_haydock_polarizations=="x","single polarization was not parsed");
+    for(const auto &invalid : {"xx", "xq", "x,y"})
+        require(rejected(haydock+"bse_haydock_polarizations "+invalid+"\n"),"invalid polarizations accepted");
+    require(rejected(haydock+"bse_haydock_apply invalid\n"),"invalid Haydock action was accepted");
+    require(rejected("bse_haydock_apply fft\n"),"unused FFT action was accepted for ELPA");
+    require(rejected("bse_haydock_apply realspace_kmpi\n"),"unused distributed-k action was accepted for ELPA");
+    for(const auto &invalid : {"bse_haydock_iterations 0\n", "bse_tda full\n",
+            "out_bse_eigenvectors true\n", "spectrum_energy_max_ev -1\n",
+            "bse_spin_types triplet\n", "bse_nstates 4\n"})
+        require(rejected(haydock+invalid),"unsupported Haydock setting was accepted");
     require(rejected("bse_plasma_energy_ev 15\nbse_tda tda\n"), "dynamic model accepted a W-only input");
     require(rejected("screened_format librpa_chi0\nchi0_coulomb_metric single_cut\nchi0_headwing true\n"), "head/wing accepted a cut-only dielectric metric");
     require(rejected("abs_gauge length\n"), "length gauge was not rejected");

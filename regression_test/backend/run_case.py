@@ -35,7 +35,8 @@ def run_bse(executable,case_root,input_options,ranks):
     case_root.mkdir(parents=True,exist_ok=False)
     (case_root/'libbse.in').write_text(''.join(f'{key} {value}\n' for key,value in input_options.items()))
     thread_count=int(os.environ.get('OMP_NUM_THREADS','1'))
-    command=['mpirun','-np',str(ranks),'--map-by',f'slot:PE={thread_count}','--bind-to','core',str(executable)]
+    binding=os.environ.get('LIBBSE_MPI_BIND_TO','core')
+    command=['mpirun','-np',str(ranks),'--map-by',f'slot:PE={thread_count}','--bind-to',binding,str(executable)]
     run_start=time.monotonic()
     with (case_root/'libbse.out').open('w') as stdout,(case_root/'libbse.err').open('w') as stderr:
         try:

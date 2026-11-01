@@ -10,14 +10,19 @@ permissions:
 
 jobs:
   build-and-test:
-    name: Build and regression tests
+    name: Build and regression tests (FFTW ${{ matrix.fftw }})
     runs-on: ubuntu-24.04
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        fftw: ['ON', 'OFF']
     env:
       OMP_NUM_THREADS: '1'
       OPENBLAS_NUM_THREADS: '1'
       OMPI_MCA_rmaps_base_oversubscribe: '1'
       OMPI_MCA_hwloc_base_binding_policy: none
+      LIBBSE_MPI_BIND_TO: none
     steps:
       - uses: actions/checkout@v4
         with:
@@ -32,7 +37,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y python3-venv g++ gfortran cmake make pkg-config libtool \
-            libopenmpi-dev openmpi-bin libopenblas-dev libscalapack-openmpi-dev
+            libopenmpi-dev openmpi-bin libopenblas-dev libscalapack-openmpi-dev libfftw3-dev
           python3 -m venv "$RUNNER_TEMP/libbse-python"
           "$RUNNER_TEMP/libbse-python/bin/python" -m pip install -r regression_test/backend/requirements.txt
           echo "$RUNNER_TEMP/libbse-python/bin" >> "$GITHUB_PATH"
@@ -49,6 +54,7 @@ jobs:
             -DCMAKE_CXX_COMPILER=mpicxx -DCMAKE_Fortran_COMPILER=mpifort \
             -DBLA_VENDOR=OpenBLAS -DLIBRPA_USE_CMAKE_INC=OFF \
             -DLIBBSE_BUILD_TESTING=ON \
+            -DLIBBSE_ENABLE_FFTW=${{ matrix.fftw }} \
             -DLIBRPA_INCLUDE_DIR="$PWD/ci-deps/LibRPA/include" \
             -DCEREAL_INCLUDE_DIR="$PWD/thirdparty/cereal-1.3.0/include" \
             -DLIBCOMM_INCLUDE_DIR="$PWD/thirdparty/LibComm/include" \
@@ -57,36 +63,43 @@ jobs:
             -DLIBBSE_REGRESSION_FIXTURES= \
             -DLIBBSE_REGRESSION_REFERENCE_EXE= 2>&1 | tee build-ci/configure.log
           cmake --build build-ci --parallel 2 2>&1 | tee build-ci/build.log
+          ctest --test-dir build-ci --show-only=json-v1 > build-ci/test-plan.json
       - name: Test General Cases
         id: general
         if: ${{ !cancelled() && steps.compile.outcome == 'success' }}
         run: |
           set -euo pipefail
-          ctest --test-dir build-ci -LE "integration|real_si" --parallel 1 --no-tests=error \
+          ctest --test-dir build-ci -LE "integration|real_si|lri_kernel" --parallel 1 --no-tests=error \
             --output-on-failure --output-junit regression.xml 2>&1 | tee build-ci/ctest.log
       - name: Test Physical Cases
         id: physical
         if: ${{ !cancelled() && steps.compile.outcome == 'success' }}
         run: |
           set -euo pipefail
-          ctest --test-dir build-ci -L real_si --verbose --parallel 1 --no-tests=error \
+          ctest --test-dir build-ci -L "real_si|lri_kernel" --verbose --parallel 1 --no-tests=error \
             --output-on-failure --output-junit real-si.xml 2>&1 | tee build-ci/real-si.log
       - name: Postrun
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: regression-${{ github.sha }}-${{ github.run_attempt }}
+          name: regression-fftw-${{ matrix.fftw }}-${{ github.sha }}-${{ github.run_attempt }}
           retention-days: 14
           if-no-files-found: warn
           path: |
             build-ci/*.log
             build-ci/*.xml
+            build-ci/test-plan.json
             build-ci/CMakeCache.txt
             build-ci/Testing/Temporary/LastTest.log
             ci-deps/elpa-build/config.log
             build-ci/real_si_runs/*/comparison.txt
             build-ci/real_si_runs/*/candidate/libbse.out
             build-ci/real_si_runs/*/candidate/libbse.err
+            build-ci/lri_kernel_runs/*/comparison.json
+            build-ci/lri_kernel_runs/*/run.out
+            build-ci/lri_kernel_runs/*/run.err
+            build-ci/lri_kernel_runs/*/execution.json
+            build-ci/lri_kernel_runs/*/libbse.d/libri_rank_*.log
       - name: Report
         if: always()
         env:

@@ -1,0 +1,63 @@
+[h_cached]
+fixture = "hchain"
+ranks = 8
+threads = 2
+budget_mb = 2048
+cached = true
+require_tr = true
+
+[h_bounded]
+fixture = "hchain"
+ranks = 8
+threads = 2
+budget_mb = 0
+cached = false
+
+[h_cached_capped]
+fixture = "hchain"
+ranks = 8
+threads = 4
+thread_limit = 2
+budget_mb = 2048
+cached = true
+require_tr = true
+
+[h_mixed_capped]
+fixture = "hchain"
+ranks = 8
+threads = 4
+thread_limit = 2
+budget_mb = 2048
+mixed_budget = true
+cached = false
+
+[h_complex]
+fixture = "hchain"
+ranks = 8
+threads = 2
+budget_mb = 2048
+complex_w = true
+cached = true
+require_tr = true
+
+[h_owner_fallback]
+fixture = "hchain"
+ranks = 32
+threads = 1
+budget_mb = 2048
+cached = true
+owner_fallback = true
+
+[si_cached]
+fixture = "si222"
+ranks = 8
+threads = 2
+budget_mb = 2048
+cached = true
+
+[si_small_budget]
+fixture = "si222"
+ranks = 8
+threads = 2
+budget_mb = 1
+cached = false

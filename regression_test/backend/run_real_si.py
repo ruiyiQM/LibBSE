@@ -14,9 +14,9 @@ from run_case import run_bse, screening_to_cache
 FIXTURE_ROOT = Path(__file__).resolve().parents[1] / 'physical_testcases/si222'
 
 
-def extract_verified(archive_name, destination):
-    archive_path = FIXTURE_ROOT / archive_name
-    expected = ast.literal_eval((FIXTURE_ROOT / 'archives.txt').read_text())[archive_name]
+def extract_verified(archive_name, destination, fixture_root=FIXTURE_ROOT):
+    archive_path = fixture_root / archive_name
+    expected = ast.literal_eval((fixture_root / 'archives.txt').read_text())[archive_name]
     with archive_path.open('rb') as handle:
         actual = hashlib.file_digest(handle, 'sha256').hexdigest()
     if actual != expected:
@@ -83,7 +83,17 @@ def main():
     parser.add_argument('--executable', type=Path, required=True)
     parser.add_argument('--work', type=Path, required=True)
     parser.add_argument('--case', required=True)
+    parser.add_argument('--solver', choices=['elpa', 'haydock'], default='elpa')
+    parser.add_argument('--apply', choices=['realspace', 'realspace_kmpi', 'fft'], default='realspace')
+    parser.add_argument('--polarizations', type=str.lower, default='xyz')
+    parser.add_argument('--quadrature', choices=['gauss', 'gagq'], default='gauss')
     args = parser.parse_args()
+    if args.apply != 'realspace' and args.solver != 'haydock':
+        parser.error('--apply fft/realspace_kmpi requires --solver haydock')
+    if args.polarizations != 'xyz' and args.solver != 'haydock':
+        parser.error('--polarizations requires --solver haydock')
+    if args.quadrature != 'gauss' and args.solver != 'haydock':
+        parser.error('--quadrature gagq requires --solver haydock')
     definition = tomllib.loads((FIXTURE_ROOT / 'cases.toml').read_text())[args.case]
     work = (args.work / (args.case + '_' + str(time.time_ns()))).resolve()
     work.mkdir(parents=True)
@@ -91,9 +101,38 @@ def main():
     extract_verified('references.tar.gz', work / 'references')
     restore_screening(work / 'fixture')
     options = options_for(work / 'fixture', definition)
+    if args.solver == 'haydock':
+        options.update(bse_solver='haydock', out_bse_eigenvectors='false',
+                       bse_haydock_apply=args.apply,
+                       bse_haydock_polarizations=args.polarizations,
+                       bse_haydock_quadrature=args.quadrature)
     run_bse(args.executable.resolve(), work / 'candidate', options, definition['ranks'])
     output = work / 'candidate/libbse.d'
     reference = work / 'references' / definition['reference']
+    if args.solver == 'haydock':
+        expected = np.loadtxt(reference / 'spectrum_singlet_tda.dat')
+        axes = [axis for axis in range(3) if 'xyz'[axis] in args.polarizations]
+        columns = [0] + [axis + 1 for axis in axes]
+        if len(axes) == 3:
+            columns.append(4)
+        expected = expected[:, columns]
+        actual = np.loadtxt(output / 'spectrum_singlet_tda.dat')
+        if (expected.shape != actual.shape or not np.isfinite(actual).all()
+                or not np.array_equal(expected[:, 0], actual[:, 0])):
+            raise ValueError('Invalid Haydock spectrum or mismatched energy grid')
+        error = float(np.linalg.norm(actual[:, 1:] - expected[:, 1:])
+                      / max(np.linalg.norm(expected[:, 1:]), 1.e-30))
+        metrics = {'pass': error <= 2.e-5, 'spectrum_relative_error': error,
+                   'solver': 'haydock', 'apply': args.apply,
+                   'polarizations': args.polarizations,
+                   'quadrature': args.quadrature,
+                   'reference_solver': 'frozen ELPA'}
+        coefficients = np.loadtxt(output / 'haydock_singlet_tda.dat', ndmin=2)
+        if set(coefficients[:, 0].astype(int)) != set(axes):
+            raise ValueError('Haydock calculated unexpected polarizations')
+        (work / 'comparison.txt').write_text(pprint.pformat(metrics) + '\n')
+        print(pprint.pformat({'case': args.case, 'work': str(work), **metrics}))
+        return 0 if metrics['pass'] else 1
     requires_screening = 'chi0' in options['screened_format']
     metrics = compare_directories(reference, output, requires_screening)
     print_eigenstate_matches(args.case + ' vs frozen reference', metrics['eigenpairs'])

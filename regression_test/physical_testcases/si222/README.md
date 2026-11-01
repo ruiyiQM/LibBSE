@@ -16,7 +16,7 @@
 
 输入归档约 **18.9 MiB**，参考输出约 **18.4 MiB**，合计约 **37.2 MiB**。原始 light 辅助基有 428 维；更激进的 116 维试算虽压到 5.7 MiB，但产生负激发能，因此未作为本数据集发布。
 
-## 实际运行的八项测试
+## 回归测试
 
 | 名称 | 输入与检查 |
 |---|---|
@@ -26,8 +26,15 @@
 | `native_w_1v1c` | 同一份数据，缩小为 8 个电子–空穴跃迁，检查带窗口选择 |
 | `native_w_unbatched` | 关闭 RI 分批优化，与 `native_w` 冻结参考比较 |
 | `native_w_mpi2` | 2 MPI 进程，与 `native_w` 单进程参考比较 |
+| `native_w_mpi4` | 4 MPI 输入，用于 Haydock R 后端原子对分区的光谱回归 |
+| `native_w_mpi8` / `chi0_headwing_mpi8` | 8 MPI 输入，用于 `realspace_kmpi` 的原生 W／解析 head/wing 光谱回归 |
 | `chi0_headwing_mpi2` | 2 MPI 进程，检查 head/wing、W 与 BSE 的进程数一致性 |
 | `boundary` | 在原始 222 网格开启 boundary，与关闭时参考比较 |
+| `haydock_native_w` | 同一 2v2c 数据的 LRI 矩阵作用与 Haydock 光谱，对照 `native_w` 冻结 ELPA 光谱；不比较逐态本征矢 |
+| `haydock_atom_partition` | 4 MPI、x 方向 GAGQ 光谱，对照相同冻结 ELPA 参考 |
+| `haydock_chi0_headwing_mpi2` | 2 MPI、分布式 RI 和解析 head/wing screening，验证原子对分区下的 Haydock 光谱 |
+| `haydock_kmpi_native_w_mpi8` / `haydock_kmpi_chi0_headwing_mpi8` | 8 MPI、分布 k、x 方向 GAGQ 光谱，对照各自相同冻结 ELPA 参考 |
+| `haydock_fft_native_w` / `haydock_fft_native_w_mpi2` | 启用 FFTW 时注册，FFT 作用的单进程／2 MPI Haydock 光谱对照相同冻结 ELPA 参考 |
 
 χ₀／dynamic 测试还将诊断矩阵重建为 W，再读取 W 求 BSE，比较两条路径的激发能和振幅。动态重放用 NumPy 独立实现有效介电矩阵公式。
 

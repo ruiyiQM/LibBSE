@@ -2,21 +2,31 @@
 from pathlib import Path
 import argparse
 import html
+import json
 import os
 import re
-import tomllib
 import xml.etree.ElementTree as ET
 
-GENERAL_TESTS = [
-    'reject_command_line', 'velocity_gauge', 'parameter', 'profiler',
-    'memory_1', 'memory_2', 'memory_4', 'spectrum_mpi',
-    'chi0_screening_serial', 'chi0_screening_mpi', 'uniform_qmesh',
-    'aims_screened_serial', 'aims_screened_mpi', 'bse_files',
-    'aims_w_converter', 'aims_mommat_converter', 'molecular_lri_comm_mpi',
-    'elpa_solver_serial', 'elpa_solver_mpi', 'block_cyclic_optics_1',
-    'block_cyclic_optics_2', 'block_cyclic_optics_3', 'block_cyclic_optics_4',
-    'regression_comparator',
-]
+# CI extensions by Ruiyi Zhou.
+
+def expected_suites(path):
+    """Use the configured CTest inventory, including optional FFTW cases."""
+    plan = json.loads(path.read_text())
+    general, physical, seen = [], [], set()
+    for test in plan['tests']:
+        name = test['name']
+        if name in seen:
+            raise ValueError(f'Duplicate configured test: {name}')
+        seen.add(name)
+        labels = next((p['value'] for p in test.get('properties', [])
+                       if p['name'] == 'LABELS'), [])
+        if any(re.search(r'real_si|lri_kernel', label) for label in labels):
+            physical.append(name)
+        elif not any(re.search('integration', label) for label in labels):
+            general.append(name)
+    if not general or not physical:
+        raise ValueError('CTest inventory must contain general and physical cases')
+    return general, physical
 
 
 def failure_reason(test):
@@ -86,14 +96,18 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--build', type=Path, required=True)
     args = parser.parse_args()
-    case_path = Path(__file__).resolve().parents[1] / 'physical_testcases/si222/cases.toml'
-    physical_names = ['LibBSE_real_Si222_' + name for name in tomllib.loads(case_path.read_text())]
     compile_outcome = os.environ.get('COMPILE_OUTCOME', 'unknown')
     marker = '🟢' if compile_outcome == 'success' else '🔴'
     lines = ['# LibBSE test report', '', f'{marker} **Compile LibBSE: {compile_outcome}**', '']
     complete = compile_outcome == 'success'
+    try:
+        general_names, physical_names = expected_suites(args.build / 'test-plan.json')
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        general_names, physical_names = [], []
+        complete = False
+        lines += ['CTest inventory missing or invalid: ' + html.escape(str(error)), '']
     for filename, title, names, stage in [
-        ('regression.xml', 'General Cases', ['LibBSE_' + name for name in GENERAL_TESTS], 'GENERAL_OUTCOME'),
+        ('regression.xml', 'General Cases', general_names, 'GENERAL_OUTCOME'),
         ('real-si.xml', 'Physical Cases', physical_names, 'PHYSICAL_OUTCOME'),
     ]:
         suite_lines, suite_complete = suite_report(args.build / filename, title, names,

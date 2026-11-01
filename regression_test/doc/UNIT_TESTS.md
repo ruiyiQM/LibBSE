@@ -22,6 +22,14 @@ ctest --test-dir build-bse --output-on-failure
 - The whitespace-separated test also checks the producer, QP source,
   screened-data, spectrum, and wavefunction-gauge controls used by the
   FHI-aims path.
+- Haydock polarization parsing checks the `xyz` default, case normalization,
+  and rejection of duplicate or invalid directions. The real-Si
+  `LibBSE_real_Si222_haydock_native_w_x` regression compares the two-column
+  x spectrum against frozen ELPA and checks that only the x chain is saved.
+- Haydock quadrature parsing preserves the `gauss` default, accepts `gagq`
+  case-insensitively, and rejects invalid or unused GAGQ settings. The Haydock
+  unit test checks degree-2k moment matching without extra Hx, exhausted and
+  short chains, malformed coefficients, and a nonpositive GAGQ extension.
 - `test_invalid_or_unsupported_parameters_are_rejected()` checks rejection of
   length gauge, unsupported or duplicate spin types, invalid pure-IPA and
   k-grid modes, unknown or obsolete keywords, and malformed integer values.
@@ -72,21 +80,32 @@ ctest --test-dir build-bse --output-on-failure
 - `test_coarse_qp_reader()` checks that `bse_use_fine_kgrid = 0` reads
   `energy_qp`, converts Hartree energies to Rydberg, skips core states, and
   computes direct and indirect gaps on the coarse grid.
+- `test_uniform_qp_lookup()` checks indexed assignment on shifted/permuted
+  meshes with periodic-equivalent and rounded coordinates, for both QP formats.
+  It rejects duplicates, missing/off-grid data, duplicate grid sites and a
+  10000-point mesh whose rounded QP coordinates are genuinely ambiguous.
 - `test_aims_reader_view()` checks producer detection, Coulomb-name and
   pre-converted velocity symlinks, and the non-destructive reader view. A
   separate case verifies that missing velocity input is rejected.
+- `write_wc()` creates one minimal MatrixMarket Wc block for a selected atom
+  pair. The test supplies a complete bare-Coulomb map but creates only the Wc
+  file required by the local LibRI `list_I x list_J` pair. It checks that
+  nonlocal files are not accessed and that the local interaction is `W = V + Wc`.
 
 ## `test_aims_mommat_to_velocity.py`
 
 - Uses a nonsymmetric `(kz,ky,kx) = (2,1,3)` fixture to check the Fortran HDF5
   grid-axis correction, packed upper-triangle mapping, Hermitian
   reconstruction, unit conversion, and binary-v1 output layout.
-- `write_wc()` creates one minimal MatrixMarket Wc block for a selected atom
-  pair.
-- `main()` supplies a complete bare-Coulomb map but creates only the Wc file
-  required by the local LibRI `list_I x list_J` pair. It checks that nonlocal
-  files are not accessed and that the returned local screened interaction is
-  `W = V + Wc`.
+- Checks that native per-k momentum streams produce byte-identical canonical
+  output, and rejects missing/truncated blocks, invalid headers and nonfinite
+  payloads without changing an existing output file.
+
+## `test_haydock.cpp`
+
+- Compares the continued fraction against the exact spectral resolvent of a
+  complex Hermitian matrix, including a degenerate eigenvalue, zero optical
+  seed, iteration cutoff, non-Hermitian output and nonfinite input.
 
 ## `test_elpa_solver.cpp`
 
@@ -129,6 +148,8 @@ ctest --test-dir build-bse --output-on-failure
   reciprocal equivalence, and fallback for irregular or duplicate meshes.
 - Checks even-grid boundary phases against an explicit average of equivalent
   images, unchanged coarse-grid values, and unchanged odd-grid phases.
+- Checks the AO/R image expansion against that same q-space correction on
+  faces, edges and three-axis corners, with averaging enabled and disabled.
 
 ## `test_aims_screened.cpp`
 
@@ -136,3 +157,85 @@ ctest --test-dir build-bse --output-on-failure
   frequency selection and rejection of incomplete text matrix blocks.
 - Compares the complete static binary W cache with the text reader in real
   space and rejects a missing binary q point, on one and two MPI ranks.
+
+## Producer-data integration checks
+
+- `test_fft_convolution` checks complex multi-field convolution against direct
+  sums on 1×1×1, 1×1×4, 2×2×3 and 3×4×5 grids, transform normalization,
+  shifted/permuted coordinates, wrapped R and even-corner image averaging.
+  Invalid meshes/buffers are rejected; without FFTW it checks the unavailable
+  backend error instead of silently skipping.
+- `test_tr_virtual` checks complex-unitary vertex fits and complete-complex W
+  transfer, ill-conditioned/singular/out-of-subspace and nonfinite inputs,
+  shifted/permuted and ambiguous k coordinates, local partner slots, nonempty
+  orbit-owner fallback and balanced Si14 ownership. Geometry is initialized once;
+  fit and cache payloads remain local to each owner.
+- `test_kmpi_contractions` checks both W G and W conj(G) against complex
+  GEMM for rectangular auxiliary spaces, real/tiny-imaginary/fully complex W,
+  and cache-budget boundaries (including optional U payload), overflow rejection
+  and representative grid sizes.
+- `test_ri_streaming` compares all four A/B interaction contributions across
+  batch sizes, then compares independent k-pair and AO/R TDA actions against
+  the explicit distributed matrix on three complex probes for singlet, RPA
+  and triplet coefficients. Run it from
+  a complete input directory; it supports aims W/chi0 and LibRPA Wc inputs.
+  With FFTW, it also checks the FFT action on the same probes and weights.
+  `--benchmark` skips dense matrices, first checks available actions agree, then
+  times them separately after warmup using three batches and adaptive repetitions.
+  For large grids, `--benchmark-apply` times only `bse_haydock_apply` and reports
+  `reference_checked=0`; validate its spectrum separately against ELPA. It checks
+  finite output without constructing or timing the k-pair reference.
+  Each batch may use one repetition when an individual action exceeds 0.1 seconds.
+  With `realspace_kmpi`, dense/streamed/FFT references use a separate Cartesian
+  object. The test also checks that a distributed-k object rejects all six
+  incompatible reference methods (five without FFTW); legacy objects retain
+  direct FFT coverage.
+  `bse_kmpi_cache_mb 0` forces the bounded contractions; a small positive
+  budget exercises size-based fallback. `LIBBSE_TEST_MIXED_CACHE_BUDGET=1`
+  gives alternating k owners zero budget to check collective agreement.
+  `LIBBSE_TEST_COMPLEX_W=1` rotates both candidate and explicit-reference W by
+  0.8+0.3i; it retains all Hx comparisons and skips only the Hermiticity check
+  invalidated by that synthetic rotation. `--benchmark-apply` also saves the
+  complete complex result in `hx.bin` for separate elementwise comparison.
+- `LibBSE_real_Si222_haydock_native_w` compares the matrix-free 2v2c Si
+  Haydock spectrum with the bundled frozen ELPA spectrum, including energy-grid
+  and finiteness checks. It runs under the `real_si` label.
+- With FFTW enabled, `LibBSE_real_Si222_haydock_fft_native_w` and its `_mpi2`
+  variant check the FFT spectrum against the same frozen ELPA reference.
+- `LibBSE_real_Si222_haydock_gagq_native_w` and its `_mpi2` variant compare
+  GAGQ x spectra with the same frozen ELPA reference.
+- `LibBSE_real_Si222_haydock_atom_partition` uses four MPI ranks and the same
+  frozen spectrum to check the R backend's atom-pair partition.
+- `LibBSE_real_Si222_haydock_chi0_headwing_mpi2` checks the atom partition with
+  distributed RI input and analytic head/wing screening against frozen ELPA.
+- `LibBSE_real_Si222_haydock_kmpi_native_w_mpi8` and
+  `LibBSE_real_Si222_haydock_kmpi_chi0_headwing_mpi8` check the distributed-k
+  backend with eight MPI ranks, x/GAGQ spectra and unchanged frozen ELPA
+  references, including analytic head/wing screening from distributed RI data.
+
+
+### Distributed Haydock recurrence
+
+`LibBSE_haydock_mpi1`, `LibBSE_haydock_mpi2` and `LibBSE_haydock_mpi4` compare complex Hermitian
+recurrences and resolvents against the replicated implementation. They cover
+empty local slices, zero optical seeds, subgroup communicators, collective
+rejection of malformed/nonfinite input and inconsistent iteration limits, and
+partitioned history payloads. The existing `LibBSE_haydock` test also exercises
+the serial API without MPI initialization. Euler additionally runs 6 and 16 ranks
+and compares small native/shifted H-chain spectra against independent ELPA
+results for all three LRI actions. Late coefficients in nearly exhausted
+subspaces are sensitive to MPI summation order; the physical gates use the
+spectrum, the seed norm, low-order moments and early recurrence coefficients.
+
+### Automated LRI kernel and CI-report gates
+
+`LibBSE_lri_kernel_*` registers eight real-input cases under `lri_kernel`.
+They compare independent explicit matrices with streamed, AO/R and optional FFT
+actions, require each rank's expected cached/bounded route, and require actual
+TR reuse where applicable. See the [case coverage](../physical_testcases/lri_kernels/README.md).
+These correctness checks run for both FFTW configurations without timing thresholds.
+
+`LibBSE_ci_report` checks discovery from the configured CTest inventory, missing
+new tests, missing inventory/JUnit, duplicate tests, skips and failures.
+`LibBSE_lri_kernel_report` checks that missing numerical comparisons, nonfinite
+or excessive errors, wrong cache routes and absent TR reuse cannot pass the gate.

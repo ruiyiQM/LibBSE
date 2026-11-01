@@ -1,3 +1,4 @@
+// Author: Ruiyi Zhou.
 #pragma once
 
 #include "bse_types.h"

@@ -67,6 +67,70 @@ def main() -> None:
         assert np.allclose(block[0, 0, 2, 1], expected)
         assert np.allclose(block[0, 0, 1, 2], np.conjugate(expected))
 
+        # The native per-k stream must produce exactly the same canonical file.
+        hdf5_reference = output.read_bytes()
+        (directory / "mommat.h5").unlink()
+        for kx, ky, kz in np.ndindex(canonical_shape):
+            ik = (kx * canonical_shape[1] + ky) * canonical_shape[2] + kz
+            packed = momentum[kz, ky, kx]
+            # HDF5 packs upper gradients; the native stream packs lower ones.
+            gradients = -(packed[:, 0::2] + 1j * packed[:, 1::2]).conjugate()
+            payload = np.ascontiguousarray(gradients.T, dtype="<c16").tobytes()
+            (directory / f"mommat_ks_kpt_{ik + 1:06d}.dat").write_bytes(
+                struct.pack("<6i", ik + 1, 1, nbands, npairs, 1, 3) + payload)
+        CONVERTER.convert(directory, output)
+        assert output.read_bytes() == hdf5_reference
+
+        # Use a physical anti-Hermitian gradient with complex band phases,
+        # rather than only checking agreement between two hand-packed formats.
+        rng = np.random.default_rng(193)
+        coeff = rng.normal(size=(nbands, nbands)) + 1j * rng.normal(size=(nbands, nbands))
+        ao = rng.normal(size=(3, nbands, nbands)) + 1j * rng.normal(size=(3, nbands, nbands))
+        ao = ao + ao.swapaxes(-1, -2).conjugate()
+        for ik in range(nk):
+            gauged = np.exp(1j * (ik + 1) * np.arange(nbands))[:, None] * coeff
+            conventional = gauged.conjugate() @ ao @ gauged.T
+            # Native order is column outer, row >= column inner.
+            rows, columns = np.triu_indices(nbands)
+            native_gradient = (1j * conventional)[:, columns, rows]
+            (directory / f"mommat_ks_kpt_{ik + 1:06d}.dat").write_bytes(
+                struct.pack("<6i", ik + 1, 1, nbands, npairs, 1, 3)
+                + np.ascontiguousarray(native_gradient, dtype="<c16").tobytes())
+        CONVERTER.convert(directory, output)
+        for ik in range(nk):
+            gauged = np.exp(1j * (ik + 1) * np.arange(nbands))[:, None] * coeff
+            stored = read_block(output, ik, nk, nbands)[0]
+            inverse = np.linalg.inv(gauged)
+            recovered = inverse.conjugate() @ stored.swapaxes(-1, -2) @ inverse.T
+            assert np.allclose(recovered, ao, atol=1.e-11, rtol=1.e-11)
+
+        # Preserve the independent physical payload for atomic-output checks.
+        hdf5_reference = output.read_bytes()
+
+        native = directory / "mommat_ks_kpt_000002.dat"
+        original = native.read_bytes()
+        for broken in [original[:12], original[:-16],
+                       struct.pack("<6i", 99, 1, nbands, npairs, 1, 3) + original[24:],
+                       struct.pack("<6i", 2, 1, nbands, npairs, 2, 3) + original[24:],
+                       original[:24] + np.full(npairs * 3, np.nan, dtype="<c16").tobytes()]:
+            native.write_bytes(broken)
+            try:
+                CONVERTER.convert(directory, output)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("invalid native momentum input was accepted")
+            assert output.read_bytes() == hdf5_reference
+        native.write_bytes(original)
+        native.unlink()
+        try:
+            CONVERTER.convert(directory, output)
+        except FileNotFoundError:
+            pass
+        else:
+            raise AssertionError("missing native k point was accepted")
+        assert output.read_bytes() == hdf5_reference
+
 
 if __name__ == "__main__":
     main()

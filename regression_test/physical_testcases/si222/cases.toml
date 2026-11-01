@@ -40,6 +40,25 @@ ranks = 2
 [native_w_mpi2.options]
 screened_format = "fhi_aims_w"
 
+[native_w_mpi4]
+reference = "native_w"
+ranks = 4
+[native_w_mpi4.options]
+screened_format = "fhi_aims_w"
+
+[native_w_mpi8]
+reference = "native_w"
+ranks = 8
+[native_w_mpi8.options]
+screened_format = "fhi_aims_w"
+
+[chi0_headwing_mpi8]
+reference = "chi0_headwing"
+ranks = 8
+[chi0_headwing_mpi8.options]
+screened_format = "fhi_aims_chi0"
+chi0_headwing = "true"
+
 [chi0_headwing_mpi2]
 reference = "chi0_headwing"
 ranks = 2
