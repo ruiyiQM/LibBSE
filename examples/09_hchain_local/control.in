@@ -1,0 +1,32 @@
+# Small closed-shell starting point; basis and vacuum are not converged.
+xc pbe
+relativistic none
+spin none
+charge 0
+KS_method serial
+k_grid 1 1 4
+occupation_type gaussian 0.01
+sc_accuracy_rho 1e-6
+sc_accuracy_etot 1e-6
+sc_accuracy_eev 1e-4
+sc_iter_limit 100
+
+# Numerical settings and first-tier H functions follow defaults_2020/light.
+species H
+  nucleus 1
+  mass 1.00794
+  l_hartree 4
+  cut_pot 3.5 1.5 1.0
+  basis_dep_cutoff 1e-4
+  radial_base 24 5.0
+  radial_multiplier 1
+  angular_grids specified
+    division 0.2421 50
+    division 0.3822 110
+    division 0.4799 194
+    division 0.5341 302
+    outer_grid 302
+  valence 1 s 1.
+  ion_occ 1 s 0.5
+  hydro 2 s 2.1
+  hydro 2 p 3.5

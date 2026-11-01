@@ -109,6 +109,28 @@ ctest --test-dir build-bse --output-on-failure
   and rejection of grids smaller than 2. Sampling instructions do not generate
   quasiparticle energies.
 
+## `test_hchain_local.py`
+
+- Checks k-grid selection, separate SCF/export preparation, relative paths in
+  the full baseline and refusal to overwrite an existing calculation.
+- Rejects incomplete or ungapped SCF results, incomplete/nonpositive BSE
+  energies and nonfinite optical output.
+
+## `test_hchain_double_grid.py`
+
+- Checks FHI-aims legacy `(AO, band)` text to packed `(band, AO)` conversion
+  with a rectangular fixture, dense-grid occupation weights and source preservation.
+- Rejects incompatible bases, incomplete KS exports, existing work directories,
+  nonfinite spectra and numerical discrepancies; failed rechecks remove stale pass reports.
+
+## `test_hchain_chi0_double_grid.py`
+
+- Checks exact complex response interpolation on odd/even coarse grids and
+  noncommensurate fine grids, including symmetric Nyquist images.
+- Checks the analytic diagonal dielectric result and non-positive rejection,
+  complete legacy Coulomb payloads and q/-q reconstruction, MatrixMarket
+  round trips, malformed/duplicate data and refusal to overwrite a calculation.
+
 ## `test_haydock.cpp`
 
 - Compares the continued fraction against the exact spectral resolvent of a

@@ -1,0 +1,7 @@
+# Dimerized H chain along z: alternating 1.0 and 1.5 Angstrom bonds.
+# This is a three-dimensionally periodic software test with transverse vacuum.
+lattice_vector 12.0  0.0  0.0
+lattice_vector  0.0 12.0  0.0
+lattice_vector  0.0  0.0  2.5
+atom 6.0 6.0 0.0 H
+atom 6.0 6.0 1.0 H

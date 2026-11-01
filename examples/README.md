@@ -1,4 +1,4 @@
-# Eight Si workflows for LibBSE
+# LibBSE workflows
 
 These standalone templates extend `../1_LibBSE_test/9_aims_abacus_template`. Native W, chi0 and dynamical settings follow the local `11_LibBSE_interpolate`, `12_LibBSE_chi0`, `13_LibBSE_dyn` and `16_non_interpolate` benchmarks and current readers. Each directory includes inputs, `env.sh`, `run.sh` and its own instructions; ABACUS examples include the original Si pseudopotential and basis files.
 
@@ -12,6 +12,14 @@ These standalone templates extend `../1_LibBSE_test/9_aims_abacus_template`. Nat
 | [06_abacus_librpa_libbse_dynamics](06_abacus_librpa_libbse_dynamics/README.md) | ABACUS | LibRPA | `librpa_chi0` | 2x2x2 | dynamical |
 | [07_abacus_librpa_libbse_interpolate_333_444](07_abacus_librpa_libbse_interpolate_333_444/README.md) | ABACUS | LibRPA | `librpa_wc` | 3x3x3 -> 4x4x4 | static |
 | [08_fhiaims_fhiaims_libbse_interpolate_333_444](08_fhiaims_fhiaims_libbse_interpolate_333_444/README.md) | FHI-aims | FHI-aims | `fhi_aims_w` | 3x3x3 -> 4x4x4 | static |
+
+The local [H-chain development baseline](09_hchain_local/README.md) provides a
+small dimerized H chain, a native FHI-aims momentum export path and a single-rank
+FHI-aims → LibRPA → LibBSE runner for local development.
+It also includes an experimental bare-chi0 interpolation control with matched
+target-grid Coulomb input and ELPA/Haydock comparisons. It retains complete
+fine-R support: the default direct R action is quadratic in the fine grid size,
+while the optional FFT action costs O(Nfine log Nfine) at fixed cell bases.
 
 Enter an example directory, adjust `env.sh` and Slurm resources if needed, run `./run.sh --check`, then `sbatch run.sh`. The default local executables contain interface extensions that may not be available in an unmodified upstream build. The workflow creates its own intermediate directories and does not reuse old benchmark outputs.
 
